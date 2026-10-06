@@ -304,71 +304,78 @@ A `Kraftfile` that declares `roms` and no `runtime` therefore MUST also declare 
 
 ## Top-level `unikraft` attribute
 
-The `unikraft` attribute CAN be specified and is used to define the source location of the Unikraft core which contains the main build system and core primitives for building a unikernel "from source".
+The `unikraft` attribute CAN be specified and is used to define the Unikraft core which contains the main build system and core primitives for building a unikernel "from source".
 
 If no `unikraft` element is specified, one of either `template` or `runtime` MUST otherwise be specified.
 
+The `kernel` attribute is an alias of `unikraft`, and `kernel` and `unikraft` MUST NOT both be specified.
+
 There are two forms of syntax: "short-hand" and "long-hand".
 
-### Setting a specific version
+### Short-hand syntax
+
+When specified as a string, the value is treated as the `source`:
 
 ```yaml
 spec: v0.7
 
-# Short-hand syntax
-unikraft: stable
-
-# Long-hand syntax
-unikraft:
-  version: stable
-```
-
-To specify a specific version of Unikraft, including a specific Git commit:
-
-```yaml
-spec: v0.7
-
-# Short-hand for a specific version
-unikraft: v0.14.0
-
-# Short-hand for a specific commit
-unikraft: 70bc0af
-```
-
-### Setting a specific source location
-
-A remote fork, mirror, or local path can be set as the source:
-
-```yaml
-spec: v0.7
-
-# Short-hand (uses HEAD of default branch)
+# A remote fork or mirror (uses HEAD of default branch)
 unikraft: https://github.com/unikraft/unikraft.git
 
-# With a specific branch or tag
-unikraft: https://github.com/unikraft/unikraft.git@staging
+# An SSH-authenticated repository
+unikraft: ssh://git@github.com/unikraft/unikraft.git
 
-# Long-hand syntax
+# A local path to the Unikraft core source code
+unikraft: path/to/unikraft
+
+# A local path to an already-built kernel binary
+kernel: ./build/helloworld_kraftcloud-x86_64
+```
+
+### Long-hand syntax
+
+The long-hand syntax allows specifying additional attributes:
+
+| Field     | Type        | Description                                                      |
+| --------- | ----------- | ---------------------------------------------------------------- |
+| `type`    | string      | How `source` is to be interpreted (see below)                    |
+| `source`  | string      | Location of the Unikraft core source code, or of a kernel binary |
+| `version` | string      | Version of the Unikraft core, e.g. a Git branch, tag or commit   |
+| `kconfig` | list or map | KConfig options (see below)                                      |
+
+```yaml
+spec: v0.7
+
 unikraft:
   source: https://github.com/unikraft/unikraft.git
   version: staging
 ```
 
-SSH-authenticated repositories are also supported:
+### Setting the source type
+
+The `type` sub-attribute declares how `source` is to be interpreted:
+
+| Type     | Description                                                            |
+| -------- | ---------------------------------------------------------------------- |
+| `source` | `source` locates the Unikraft core source code, to be built            |
+| `kernel` | `source` is a path to an already-built kernel binary, to be used as-is |
+
+When `type` is not specified, it is inferred from `source`.
+
+With `type: kernel`, no build of the Unikraft core is performed, and `version` MUST NOT be set:
 
 ```yaml
 spec: v0.7
 
-unikraft: ssh://git@github.com/unikraft/unikraft.git
+targets:
+  - kraftcloud/x86_64
+
+kernel:
+  type: kernel
+  source: ./build/helloworld_kraftcloud-x86_64
 ```
 
-A local path can be used:
-
-```yaml
-spec: v0.7
-
-unikraft: path/to/unikraft
-```
+A kernel binary carries no architecture or platform metadata of its own, so a `Kraftfile` which uses a kernel binary MUST also declare `targets`, unless the target is supplied by the tooling.
 
 ### Specifying KConfig configuration
 
@@ -391,7 +398,7 @@ unikraft:
 
 ### A more complex example
 
-All three sub-attributes — `source`, `version` and `kconfig` — can be combined:
+The `source`, `version` and `kconfig` sub-attributes can be combined:
 
 ```yaml
 spec: v0.7
@@ -527,7 +534,7 @@ spec: v0.7
 
 name: helloworld
 
-unikraft: stable
+unikraft: https://github.com/unikraft/unikraft.git
 
 libraries:
   # Short-hand syntax
@@ -593,7 +600,7 @@ Each target can include its own `kconfig` options:
 ```yaml
 spec: v0.7
 
-unikraft: stable
+unikraft: https://github.com/unikraft/unikraft.git
 
 targets:
   - plat: qemu
