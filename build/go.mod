@@ -20,7 +20,7 @@ require (
 	golang.org/x/mod v0.41.0
 	google.golang.org/grpc v1.83.2
 	unikraft.com/x/image-spec v0.0.0-20260930145451-e11e6b4df7f4
-	unikraft.com/x/io v0.0.0-20260924124354-cba1e2dc1921
+	unikraft.com/x/io v0.0.0-20261013095502-1607ff4bc624
 	unikraft.com/x/kraftfile v0.0.0-20260922102225-cfab838c8e73
 	unikraft.com/x/log v0.0.0-20260904140856-1944f6df62e1
 )
