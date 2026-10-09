@@ -530,7 +530,11 @@ func (b Builder) buildRootfsOCI(ctx context.Context, opts BuildOpts, part string
 		verb = "pull"
 	}
 	err = progress.Step(progress.WithPrefix(b.progressWriter(), part), verb+" "+opts.Rootfs.Path, func() (err error) {
-		loaded, err = access.LoadAll(ctx, uri, matcher)
+		res, err := access.Resolve(ctx, uri)
+		if err != nil {
+			return fmt.Errorf("resolving rootfs image %q: %w", opts.Rootfs.Path, err)
+		}
+		loaded, err = access.LoadAll(ctx, res, matcher)
 		if err != nil {
 			return fmt.Errorf("pulling rootfs image %q: %w", opts.Rootfs.Path, err)
 		}
