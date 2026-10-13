@@ -110,6 +110,7 @@ tasks:
       # Modules the CLI links on windows.
       # This list is alphabetical and should not be reordered.
       modules:
+      - ./buildkit
       - ./colors
       - ./filters
       - ./fingerprint
