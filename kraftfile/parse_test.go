@@ -173,7 +173,6 @@ func TestParseRootfsSourceTypes(t *testing.T) {
 	}{
 		{"oci", "oci", SourceTypeOCI, ""},
 		{"dir", "dir", SourceTypeDirectory, ""},
-		{"file", "file", SourceTypeFile, ""},
 		{"tarball", "tarball", SourceTypeTarball, ""},
 		{"cpio", "cpio", SourceTypeCpio, ""},
 		{"erofs", "erofs", SourceTypeErofs, ""},

@@ -266,7 +266,6 @@ The `type` field can be used to explicitly declare what kind of source is being 
 | ------------ | ------------------------------------------------------------------------------------------------------- |
 | `oci`        | An OCI image reference                                                                                  |
 | `dir`        | A directory containing files                                                                            |
-| `file`       | A single file                                                                                           |
 | `tarball`    | A tarball archive                                                                                       |
 | `cpio`       | An existing CPIO archive                                                                                |
 | `erofs`      | An existing EROFS image                                                                                 |

@@ -130,7 +130,6 @@ type SourceType string
 const (
 	SourceTypeOCI        = SourceType("oci")
 	SourceTypeDirectory  = SourceType("dir")
-	SourceTypeFile       = SourceType("file")
 	SourceTypeTarball    = SourceType("tarball")
 	SourceTypeCpio       = SourceType("cpio")
 	SourceTypeErofs      = SourceType("erofs")
@@ -140,7 +139,6 @@ const (
 var SourceTypes = []SourceType{
 	SourceTypeOCI,
 	SourceTypeDirectory,
-	SourceTypeFile,
 	SourceTypeTarball,
 	SourceTypeCpio,
 	SourceTypeErofs,
