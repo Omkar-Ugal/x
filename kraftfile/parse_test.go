@@ -6,6 +6,7 @@
 package kraftfile
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -405,6 +406,70 @@ cmd: [1, 2]
 	_, err := ParseBytes([]byte(input))
 	require.Error(t, err)
 	require.ErrorContains(t, err, "cmd array entries must be strings")
+}
+
+func TestJSONRoundTrip(t *testing.T) {
+	input := `spec: v0.7
+name: helloworld
+template: https://github.com/unikraft/app-elfloader.git
+runtime: base:latest
+cmd: ["/server", "-v"]
+env:
+- DEBUG
+- HOME=/
+labels:
+  key: value
+unikraft:
+  version: stable
+  kconfig:
+    CONFIG_LIBUKDEBUG: true
+    CONFIG_STACK_SIZE: 16
+libraries:
+  lwip:
+    version: staging
+    kconfig:
+    - CONFIG_LWIP_TCP=y
+rootfs:
+  source:
+    path: .
+    dockerfile: Dockerfile
+  format: erofs
+roms:
+- ./rom
+volumes:
+- ./data:/data:ro
+targets:
+- plat: qemu
+  arch: x86_64
+  kconfig:
+    CONFIG_LIBVFSCORE_ROOTFS: 9pfs
+`
+	requireValidSchema(t, input)
+	doc, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+
+	data, err := json.Marshal(doc)
+	require.NoError(t, err)
+
+	var got Kraftfile
+	require.NoError(t, json.Unmarshal(data, &got))
+	got.Spec = doc.Spec
+	require.Equal(t, doc, &got)
+}
+
+func TestMapMarshalJSON(t *testing.T) {
+	data, err := json.Marshal(Map{
+		{Key: "HOME", Value: "/"},
+		{Key: "DEBUG", Value: nil},
+		{Key: "SIZE", Value: 16.0},
+		{Key: "HOME", Value: "/root"},
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"DEBUG":null,"HOME":"/root","SIZE":16}`, string(data))
+
+	data, err = json.Marshal(Map(nil))
+	require.NoError(t, err)
+	require.Equal(t, "null", string(data))
 }
 
 func requireValidSchema(t *testing.T, input string) {
