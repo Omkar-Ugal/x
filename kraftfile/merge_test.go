@@ -91,6 +91,15 @@ func TestMergeEnv(t *testing.T) {
 	require.Equal(t, "root", current.Env.Get("USER"))
 }
 
+func TestMergeEnvIntoEmpty(t *testing.T) {
+	current := &Kraftfile{}
+	current.Merge(&Kraftfile{
+		Env: Map{{Key: "HOME", Value: "/"}},
+	})
+
+	require.Equal(t, Map{{Key: "HOME", Value: "/"}}, current.Env)
+}
+
 func TestMergeLabels(t *testing.T) {
 	base := &Kraftfile{
 		Labels: map[string]string{
