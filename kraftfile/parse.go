@@ -132,6 +132,7 @@ func (m *Map) UnmarshalJSON(data []byte) error {
 
 	switch value := raw.(type) {
 	case nil:
+		*m = nil
 		return nil
 	case []any:
 		items := make([]MapPair, 0, len(value))

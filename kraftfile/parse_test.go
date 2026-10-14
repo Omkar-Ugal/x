@@ -472,6 +472,12 @@ func TestMapMarshalJSON(t *testing.T) {
 	require.Equal(t, "null", string(data))
 }
 
+func TestMapUnmarshalJSONNull(t *testing.T) {
+	kf := Kraftfile{Env: Map{{Key: "HOME", Value: "/"}}}
+	require.NoError(t, json.Unmarshal([]byte(`{"env":null}`), &kf))
+	require.Nil(t, kf.Env)
+}
+
 func requireValidSchema(t *testing.T, input string) {
 	t.Helper()
 	requireSchemaOK(t, input)
