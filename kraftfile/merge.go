@@ -32,7 +32,7 @@ func (kf *Kraftfile) Merge(other *Kraftfile) {
 	// Env: Merge maps with other taking precedence
 	if len(other.Env) > 0 {
 		if kf.Env == nil {
-			kf.Env = make(Map, len(other.Env))
+			kf.Env = make(Map, 0, len(other.Env))
 		}
 		kf.Env.Merge(other.Env)
 	}

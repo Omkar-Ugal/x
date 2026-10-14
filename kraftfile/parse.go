@@ -114,6 +114,16 @@ func (cmd *Command) UnmarshalJSON(data []byte) error {
 	}
 }
 
+// MarshalJSON encodes m in the map form, which keeps the type of each value.
+// As when the map form is parsed, the keys are sorted, and a key that is
+// repeated keeps its last value.
+func (m Map) MarshalJSON() ([]byte, error) {
+	if m == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(m.AsMap())
+}
+
 func (m *Map) UnmarshalJSON(data []byte) error {
 	var raw any
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -122,6 +132,7 @@ func (m *Map) UnmarshalJSON(data []byte) error {
 
 	switch value := raw.(type) {
 	case nil:
+		*m = nil
 		return nil
 	case []any:
 		items := make([]MapPair, 0, len(value))
