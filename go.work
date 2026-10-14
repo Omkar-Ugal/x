@@ -5,6 +5,7 @@ use .
 // Common modules.
 // This list is alphabetical and should not be reordered.
 use (
+	./build
 	./buildkit
 	./colors
 	./filters
