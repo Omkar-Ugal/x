@@ -6,7 +6,9 @@
 package buildkit
 
 import (
+	"cmp"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -58,6 +60,43 @@ func TestPlatformCreate(t *testing.T) {
 
 			req := <-created
 			assert.Equal(t, tc.want, req.Env[EnvOCIWorkerGCKeepStorage])
+		})
+	}
+}
+
+func TestPlatformAcquireQuota(t *testing.T) {
+	// quotaError is the answer to a request over the quota, for a list of kind.
+	const quotaError = `{"status": "error", "data": {"%s": [{"status": "error", "message": "Quota exceeded", "error": 19}]}}`
+
+	for _, tc := range []struct {
+		name string
+		// answers holds the body for each "METHOD /path", else success.
+		answers map[string]string
+	}{
+		{
+			name: "a new builder over the quota is refused",
+			answers: map[string]string{
+				"POST /v1/volumes": fmt.Sprintf(quotaError, "volumes"),
+			},
+		},
+		{
+			name: "a builder in standby over the quota is refused",
+			answers: map[string]string{
+				"GET /v1/instances":          `{"status": "success", "data": {"instances": [{"status": "success", "uuid": "u1", "name": "buildkit-default", "state": "standby"}]}}`,
+				"PUT /v1/instances/u1/start": fmt.Sprintf(quotaError, "instances"),
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(cmp.Or(tc.answers[r.Method+" "+r.URL.Path], `{"status": "success"}`)))
+			}))
+			t.Cleanup(srv.Close)
+			c := platform.NewClient(platform.WithDefaultEndpoint(srv.URL), platform.WithToken("token"))
+
+			_, err := NewPlatform(c).Acquire(t.Context(), Key{})
+			assert.ErrorIs(t, err, ErrQuota)
 		})
 	}
 }
