@@ -83,8 +83,14 @@ func TestGuessLocation(t *testing.T) {
 		{name: "a named scheme is taken as given", src: "oci://app", scheme: schemes.OCI},
 		{name: "an existing directory is a layout", src: layout, scheme: schemes.OCILayout},
 		{name: "an existing file is an archive", src: archive, scheme: schemes.OCIArchive},
-		{name: "a tarball name is an archive", src: "missing/app.tar.gz", scheme: schemes.OCIArchive},
-		{name: "a trailing separator is a layout", src: "missing/layout/", scheme: schemes.OCILayout},
+		{name: "an existing directory with a tag is a layout", src: layout + ":v1", scheme: schemes.OCILayout},
+		{name: "a tarball name is an archive", src: "./missing/app.tar.gz", scheme: schemes.OCIArchive},
+		{name: "a parent tarball name is an archive", src: "../missing/app.tar", scheme: schemes.OCIArchive},
+		{name: "a trailing separator is a layout", src: "./missing/layout/", scheme: schemes.OCILayout},
+		{name: "the current directory is a layout", src: ".", scheme: schemes.OCILayout},
+		{name: "a bare tarball name is a reference", src: "app.tar", scheme: schemes.OCI},
+		{name: "a bare trailing separator is a reference", src: "missing/layout/", scheme: schemes.OCI},
+		{name: "a dotted name is a reference", src: ".app", scheme: schemes.OCI},
 		{name: "anything else is a reference", src: "unikraft.io/app:latest", scheme: schemes.OCI},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -98,6 +104,18 @@ func TestGuessLocation(t *testing.T) {
 
 	_, err := GuessLocation("./missing")
 	assert.Error(t, err, "a path that names nothing is ambiguous")
+}
+
+func TestGuessLocationIgnoresExistingBareNames(t *testing.T) {
+	t.Chdir(t.TempDir())
+	require.NoError(t, os.Mkdir("app", 0o755))
+	require.NoError(t, os.WriteFile("app.tar", nil, 0o644))
+
+	for _, src := range []string{"app", "app:latest", "app.tar"} {
+		got, err := GuessLocation(src)
+		require.NoError(t, err)
+		assert.Equal(t, schemes.OCI, got.Scheme, src)
+	}
 }
 
 func TestSplitPathTag(t *testing.T) {
