@@ -64,10 +64,10 @@ func LoadAllTarballReaders(ctx context.Context, r io.Reader, platform platforms.
 	return nil, errLocalImages
 }
 
-func SaveTarball(ctx context.Context, tarballPath string, image ...*Image) error {
-	return errLocalImages
+func SaveTarball(ctx context.Context, tarballPath string, image ...*Image) (ocispec.Descriptor, error) {
+	return ocispec.Descriptor{}, errLocalImages
 }
 
-func SaveTarballWriter(ctx context.Context, w io.Writer, image ...*Image) error {
-	return errLocalImages
+func SaveTarballWriter(ctx context.Context, w io.Writer, image ...*Image) (ocispec.Descriptor, error) {
+	return ocispec.Descriptor{}, errLocalImages
 }

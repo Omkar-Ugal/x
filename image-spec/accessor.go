@@ -14,6 +14,7 @@ import (
 	"github.com/containerd/containerd/v2/core/remotes"
 	"github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/containerd/platforms"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"unikraft.com/x/image-spec/reference"
 	"unikraft.com/x/image-spec/schemes"
@@ -96,26 +97,27 @@ func (accessor *Accessor) LoadAll(ctx context.Context, src *Location, platform p
 	}
 }
 
-func (accessor *Accessor) Save(ctx context.Context, dest *Location, img ...*Image) error {
+// Save stores img at dest under one index, and returns the descriptor of
+// that index.
+func (accessor *Accessor) Save(ctx context.Context, dest *Location, img ...*Image) (ocispec.Descriptor, error) {
 	switch dest.Scheme {
 	case schemes.OCI:
 		named, err := reference.ParseNormalizedNamed(dest.Path)
 		if err != nil {
-			return fmt.Errorf("parsing image reference %q: %w", dest, err)
+			return ocispec.Descriptor{}, fmt.Errorf("parsing image reference %q: %w", dest, err)
 		}
-		_, _, err = SaveRegistryImage(ctx, named, accessor.remote, img...)
-		return err
+		_, desc, err := SaveRegistryImage(ctx, named, accessor.remote, img...)
+		return desc, err
 	case schemes.OCILayout:
 		path, tag := splitPathTag(dest.Path)
 		if tag == "" {
 			tag = "latest"
 		}
-		_, err := SaveOCILayoutNamed(ctx, path, tag, img...)
-		return err
+		return SaveOCILayoutNamed(ctx, path, tag, img...)
 	case schemes.OCIArchive:
 		return SaveTarball(ctx, dest.Path, img...)
 	default:
-		return fmt.Errorf("unsupported location scheme: %q", dest.Scheme)
+		return ocispec.Descriptor{}, fmt.Errorf("unsupported location scheme: %q", dest.Scheme)
 	}
 }
 

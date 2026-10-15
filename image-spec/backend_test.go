@@ -61,7 +61,8 @@ func TestBuildImage(t *testing.T) {
 				t.Helper()
 				workDir := t.TempDir()
 				tarPath := filepath.Join(workDir, "out.tar")
-				require.NoError(t, SaveTarball(ctx, tarPath, image))
+				desc, err := SaveTarball(ctx, tarPath, image)
+				require.NoError(t, err)
 
 				f, err := os.Open(tarPath)
 				require.NoError(t, err)
@@ -71,9 +72,10 @@ func TestBuildImage(t *testing.T) {
 				store, err := local.NewStore(storeDir)
 				require.NoError(t, err)
 
-				idxDesc, err := imagesarchive.ImportIndex(ctx, store, f)
+				// The tarball carries the index that SaveTarball reports.
+				_, err = imagesarchive.ImportIndex(ctx, store, f)
 				require.NoError(t, err)
-				return store, idxDesc
+				return store, desc
 			},
 		},
 	}
@@ -206,10 +208,11 @@ func TestDeleteImage(t *testing.T) {
 		tarPath := filepath.Join(workDir, "image.tar")
 
 		// Save an image to a tarball
-		require.NoError(t, SaveTarball(ctx, tarPath, testImage))
+		_, err := SaveTarball(ctx, tarPath, testImage)
+		require.NoError(t, err)
 
 		// Verify the tarball exists
-		_, err := os.Stat(tarPath)
+		_, err = os.Stat(tarPath)
 		require.NoError(t, err)
 
 		// Delete the tarball

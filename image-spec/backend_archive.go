@@ -17,6 +17,7 @@ import (
 	"github.com/containerd/containerd/v2/core/images/archive"
 	"github.com/containerd/containerd/v2/plugins/content/local"
 	"github.com/containerd/platforms"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // This files provides functions for loading and saving images to/from tarball files using
@@ -116,44 +117,45 @@ func LoadAllTarballReaders(ctx context.Context, r io.Reader, platform platforms.
 }
 
 // SaveTarball saves an image to a tarball file.
-func SaveTarball(ctx context.Context, tarballPath string, image ...*Image) error {
+func SaveTarball(ctx context.Context, tarballPath string, image ...*Image) (ocispec.Descriptor, error) {
 	f, err := os.Create(tarballPath)
 	if err != nil {
-		return fmt.Errorf("failed to create tarball file: %w", err)
+		return ocispec.Descriptor{}, fmt.Errorf("failed to create tarball file: %w", err)
 	}
 	defer f.Close()
 
 	return SaveTarballWriter(ctx, f, image...)
 }
 
-// SaveTarballWriter saves an image to a tarball writer.
-func SaveTarballWriter(ctx context.Context, w io.Writer, image ...*Image) error {
+// SaveTarballWriter saves an image to a tarball writer, and returns the
+// descriptor of the index that lists the images in the tarball.
+func SaveTarballWriter(ctx context.Context, w io.Writer, image ...*Image) (ocispec.Descriptor, error) {
 	tmpDir, err := os.MkdirTemp("", "imagespec-tarball-*")
 	if err != nil {
-		return fmt.Errorf("failed to create temp directory: %w", err)
+		return ocispec.Descriptor{}, fmt.Errorf("failed to create temp directory: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
 	store, err := local.NewStore(tmpDir)
 	if err != nil {
-		return fmt.Errorf("failed to create local store: %w", err)
+		return ocispec.Descriptor{}, fmt.Errorf("failed to create local store: %w", err)
 	}
 
 	desc, err := SaveContent(ctx, store, "latest", image...)
 	if err != nil {
-		return fmt.Errorf("failed to save image to local store: %w", err)
+		return ocispec.Descriptor{}, fmt.Errorf("failed to save image to local store: %w", err)
 	}
 
 	// Export requires content.InfoReaderProvider which local.Store implements
 	infoStore, ok := store.(content.InfoReaderProvider)
 	if !ok {
-		return fmt.Errorf("local store does not implement content.InfoReaderProvider")
+		return ocispec.Descriptor{}, fmt.Errorf("local store does not implement content.InfoReaderProvider")
 	}
 
 	err = archive.Export(ctx, infoStore, w, archive.WithManifest(desc))
 	if err != nil {
-		return fmt.Errorf("failed to export tarball: %w", err)
+		return ocispec.Descriptor{}, fmt.Errorf("failed to export tarball: %w", err)
 	}
 
-	return nil
+	return desc, nil
 }

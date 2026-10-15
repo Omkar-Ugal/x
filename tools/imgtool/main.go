@@ -191,7 +191,7 @@ func (c *CopyCmd) Run(ctx context.Context) (rerr error) {
 
 	insecure = c.Insecure == "destination" || c.Insecure == "all"
 	accessor = newAccessor(insecure)
-	err = accessor.Save(ctx, dest, imgs...)
+	_, err = accessor.Save(ctx, dest, imgs...)
 	if err != nil {
 		return fmt.Errorf("saving image to destination: %w", err)
 	}
