@@ -45,6 +45,8 @@ type BuildOpts struct {
 }
 
 type FSOpts struct {
+	// Source holds Path. When it is nil, Path is on the host.
+	Source     Source
 	Path       string
 	Type       kraftfile.SourceType
 	Dockerfile string

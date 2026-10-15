@@ -333,13 +333,13 @@ func TestApplyConfigOverridesEmpty(t *testing.T) {
 }
 
 func TestResolveSourceDockerfileConflictingType(t *testing.T) {
-	fsOpts := FSOpts{Path: "context", Dockerfile: "MyDockerfile", Type: kraftfile.SourceTypeTarball}
-	require.ErrorContains(t, resolveSource("/root", &fsOpts), "source type must be")
+	fsOpts := FSOpts{Source: LocalSource{Dir: "/root"}, Path: "context", Dockerfile: "MyDockerfile", Type: kraftfile.SourceTypeTarball}
+	require.ErrorContains(t, resolveSource(&fsOpts), "source type must be")
 }
 
 func TestResolveSourceOCIWithDockerfile(t *testing.T) {
-	fsOpts := FSOpts{Path: "index.unikraft.io/test/img:latest", Type: kraftfile.SourceTypeOCI, Dockerfile: "MyDockerfile"}
-	require.ErrorContains(t, resolveSource("/root", &fsOpts), "dockerfile cannot be set")
+	fsOpts := FSOpts{Source: LocalSource{Dir: "/root"}, Path: "index.unikraft.io/test/img:latest", Type: kraftfile.SourceTypeOCI, Dockerfile: "MyDockerfile"}
+	require.ErrorContains(t, resolveSource(&fsOpts), "dockerfile cannot be set")
 }
 
 func TestRootfsUnsupportedType(t *testing.T) {
@@ -577,6 +577,32 @@ func TestRootfsTarballKeepsOwners(t *testing.T) {
 			require.Equal(t, owner{1000, 1000}, owners["owned/file.txt"])
 		})
 	}
+}
+
+func TestRootfsStateDirectoryKeepsOwners(t *testing.T) {
+	tarFile, err := os.Open(writeOwnedTarball(t, 1000, 1000))
+	require.NoError(t, err)
+	defer tarFile.Close()
+	srcFS, err := buildfs.TarballFS(tarFile)
+	require.NoError(t, err)
+
+	imgs, err := Builder{}.packRootfs(t.Context(), BuildOpts{
+		Rootfs: FSOpts{
+			Source: StateSource{},
+			Type:   kraftfile.SourceTypeDirectory,
+			Format: kraftfile.FsTypeCpio,
+		},
+		Platform: []ocispec.Platform{{OS: "fc", Architecture: "x86_64"}},
+	}, srcFS)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		for _, img := range imgs {
+			_ = img.Close()
+		}
+	})
+
+	owners := readOwners(t, imgs[0].Initrd, kraftfile.FsTypeCpio)
+	require.Equal(t, owner{1000, 1000}, owners["owned/file.txt"])
 }
 
 func TestRootfsDirectoryIsOwnedByRoot(t *testing.T) {

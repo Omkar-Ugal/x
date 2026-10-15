@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/moby/buildkit/client"
+	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/session"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/require"
@@ -48,6 +49,28 @@ func TestRootfsDockerfileWithoutBuildkit(t *testing.T) {
 		Platform: []ocispec.Platform{{OS: "fc", Architecture: "x86_64"}},
 	})
 	require.ErrorContains(t, err, "no buildkit connector configured")
+}
+
+// TestBuildStateSourcesNeedBuildkit asserts that the sources in a
+// StateSource are not read from the host.
+func TestBuildStateSourcesNeedBuildkit(t *testing.T) {
+	t.Chdir(writeTestDirectory(t))
+	st := StateSource{State: llb.Scratch()}
+
+	for name, opts := range map[string]BuildOpts{
+		"dir rom": {
+			Roms: []FSOpts{{Source: st, Path: "subdir", Type: kraftfile.SourceTypeDirectory}},
+		},
+		"dockerfile rootfs": {
+			Rootfs: FSOpts{Source: st, Path: "Dockerfile", Type: kraftfile.SourceTypeDockerfile},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts.Platform = []ocispec.Platform{{OS: "fc", Architecture: "x86_64"}}
+			_, err := Builder{}.Build(t.Context(), opts)
+			require.ErrorContains(t, err, "no buildkit connector configured")
+		})
+	}
 }
 
 func TestRootfsDockerfileSessionError(t *testing.T) {

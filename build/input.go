@@ -11,8 +11,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
-	"strings"
 
 	"golang.org/x/mod/semver"
 
@@ -37,7 +35,7 @@ func LoadBuildOpts(ctx context.Context, path string) (BuildOpts, error) {
 
 	// A Dockerfile is not a Kraftfile document. The name must select it before
 	// the Kraftfile parser reads the file.
-	if !fi.IsDir() && slices.Contains(strings.Split(filepath.Base(path), "."), defaultDockerfileName) {
+	if !fi.IsDir() && isDockerfile(filepath.Base(path)) {
 		return BuildOpts{
 			Rootfs: FSOpts{
 				Path: path,
@@ -80,5 +78,5 @@ func LoadBuildOpts(ctx context.Context, path string) (BuildOpts, error) {
 	if !fi.IsDir() {
 		dir = filepath.Dir(path)
 	}
-	return kraftfileToBuildOpts(dir, kf)
+	return KraftfileBuildOpts(kf, LocalSource{Dir: dir})
 }
