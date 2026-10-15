@@ -12,8 +12,9 @@ import (
 
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/session"
-	"github.com/moby/buildkit/util/progress/progresswriter"
 	imagespec "unikraft.com/x/image-spec"
+
+	"unikraft.com/x/build/progress"
 )
 
 // Builder makes Unikraft images. It calls each of its functions only when a
@@ -31,9 +32,10 @@ type Builder struct {
 	// it is nil, BuildKit pulls images without credentials.
 	Session func(ctx context.Context) ([]session.Attachable, error)
 
-	// Progress gives a writer for one solve, with prefix on each vertex. When
-	// it is nil, the build discards the progress.
-	Progress func(ctx context.Context, prefix string) (progresswriter.Writer, error)
+	// Progress takes every step of the build as a buildkit SolveStatus,
+	// the ones outside the daemon included. When it is nil, the build
+	// discards its progress.
+	Progress progress.Writer
 
 	// TempDir holds the intermediate files. Empty means os.TempDir.
 	TempDir string
@@ -53,28 +55,10 @@ func (b Builder) images(ctx context.Context) (*imagespec.Accessor, error) {
 	return access, nil
 }
 
-// discardProgress reads and drops the solve status, because the client blocks
-// when nothing reads the channel.
-type discardProgress struct {
-	status chan *client.SolveStatus
-	done   chan struct{}
-}
-
-func newDiscardProgress() progresswriter.Writer {
-	p := &discardProgress{
-		status: make(chan *client.SolveStatus),
-		done:   make(chan struct{}),
+// progressWriter returns where the build reports its steps.
+func (b Builder) progressWriter() progress.Writer {
+	if b.Progress == nil {
+		return progress.Discard
 	}
-	go func() {
-		defer close(p.done)
-		for range p.status {
-		}
-	}()
-	return p
+	return b.Progress
 }
-
-func (p *discardProgress) Done() <-chan struct{} { return p.done }
-
-func (p *discardProgress) Err() error { return nil }
-
-func (p *discardProgress) Status() chan *client.SolveStatus { return p.status }

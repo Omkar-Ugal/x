@@ -41,6 +41,7 @@ import (
 
 	"unikraft.com/x/build/buildflags"
 	"unikraft.com/x/build/internal/buildfs"
+	"unikraft.com/x/build/progress"
 )
 
 // applyConfigOverrides layers the build options' Cmd, Env and Labels on top of
@@ -190,7 +191,7 @@ func (b Builder) buildRoms(ctx context.Context, opts BuildOpts) (_ [][]imagespec
 		}
 	}()
 
-	for _, rom := range opts.Roms {
+	for i, rom := range opts.Roms {
 		romBuildOpts := BuildOpts{
 			Rootfs: FSOpts{
 				Source: rom.Source,
@@ -208,7 +209,7 @@ func (b Builder) buildRoms(ctx context.Context, opts BuildOpts) (_ [][]imagespec
 			NoCache:  opts.NoCache,
 		}
 
-		imgs, err := b.BuildRootfs(ctx, romBuildOpts)
+		imgs, err := b.buildRootfs(ctx, romBuildOpts, fmt.Sprintf("rom %d", i+1))
 		if err != nil {
 			return nil, fmt.Errorf("building rom from %q: %w", rom.Path, err)
 		}
@@ -235,7 +236,14 @@ func (b Builder) buildRoms(ctx context.Context, opts BuildOpts) (_ [][]imagespec
 
 // BuildRootfs builds a rootfs for each platform in opts.Platform from the
 // source at opts.Rootfs.Path.
-func (b Builder) BuildRootfs(ctx context.Context, opts BuildOpts) (_ []*imagespec.Image, rerr error) {
+func (b Builder) BuildRootfs(ctx context.Context, opts BuildOpts) ([]*imagespec.Image, error) {
+	return b.buildRootfs(ctx, opts, "rootfs")
+}
+
+// buildRootfs builds part, the rootfs or a rom, for each platform in
+// opts.Platform from the source at opts.Rootfs.Path, and reports every step
+// of it under that name.
+func (b Builder) buildRootfs(ctx context.Context, opts BuildOpts, part string) ([]*imagespec.Image, error) {
 	if len(opts.Platform) == 0 {
 		return nil, fmt.Errorf("at least one platform must be specified")
 	}
@@ -279,14 +287,14 @@ func (b Builder) BuildRootfs(ctx context.Context, opts BuildOpts) (_ []*imagespe
 		return buildRootfsPackaged(ctx, opts)
 	case kraftfile.SourceTypeDirectory:
 		if fromState {
-			return b.buildRootfsDirectoryState(ctx, opts)
+			return b.buildRootfsDirectoryState(ctx, opts, part)
 		}
-		return b.buildRootfsDirectory(ctx, opts)
+		return b.buildRootfsDirectory(ctx, opts, part)
 	case kraftfile.SourceTypeTarball:
-		return b.buildRootfsTarball(ctx, opts)
+		return b.buildRootfsTarball(ctx, opts, part)
 	case kraftfile.SourceTypeDockerfile:
 		if fromState {
-			return b.buildRootfsDockerfile(ctx, opts)
+			return b.buildRootfsDockerfile(ctx, opts, part)
 		}
 		if _, err := os.Stat(opts.Rootfs.Path); err != nil {
 			if os.IsNotExist(err) {
@@ -303,9 +311,9 @@ func (b Builder) BuildRootfs(ctx context.Context, opts BuildOpts) (_ []*imagespe
 				return nil, fmt.Errorf("checking dockerfile path %q: %w", dockerfilePath, err)
 			}
 		}
-		return b.buildRootfsDockerfile(ctx, opts)
+		return b.buildRootfsDockerfile(ctx, opts, part)
 	case kraftfile.SourceTypeOCI:
-		return b.buildRootfsOCI(ctx, opts)
+		return b.buildRootfsOCI(ctx, opts, part)
 	default:
 		return nil, fmt.Errorf("unsupported rootfs type %q", opts.Rootfs.Type)
 	}
@@ -340,17 +348,17 @@ func buildRootfsPackaged(_ context.Context, opts BuildOpts) (_ []*imagespec.Imag
 
 // buildRootfsFromDirectory archives the source directory into a temporary
 // rootfs file (CPIO or EroFS, based on opts.Rootfs.Format) for each platform.
-func (b Builder) buildRootfsDirectory(ctx context.Context, opts BuildOpts) ([]*imagespec.Image, error) {
+func (b Builder) buildRootfsDirectory(ctx context.Context, opts BuildOpts, part string) ([]*imagespec.Image, error) {
 	srcFS := os.DirFS(opts.Rootfs.Path)
 	if runtime.GOOS == "windows" {
 		srcFS = buildfs.WindowsDirFS(srcFS)
 	}
-	return b.packRootfs(ctx, opts, srcFS)
+	return b.packRootfs(ctx, opts, part, srcFS)
 }
 
 // buildRootfsDirectoryState packages a directory of a StateSource for each
 // platform. The state can depend on the platform, thus each one has a solve.
-func (b Builder) buildRootfsDirectoryState(ctx context.Context, opts BuildOpts) (_ []*imagespec.Image, rerr error) {
+func (b Builder) buildRootfsDirectoryState(ctx context.Context, opts BuildOpts, part string) (_ []*imagespec.Image, rerr error) {
 	s, err := b.newSolver(ctx)
 	if err != nil {
 		return nil, err
@@ -373,7 +381,7 @@ func (b Builder) buildRootfsDirectoryState(ctx context.Context, opts BuildOpts) 
 	for _, p := range opts.Platform {
 		platOpts := opts
 		platOpts.Platform = []ocispec.Platform{p}
-		platImgs, err := b.packDirectoryState(ctx, s, platOpts)
+		platImgs, err := b.packDirectoryState(ctx, s, platOpts, part)
 		if err != nil {
 			return nil, err
 		}
@@ -383,8 +391,8 @@ func (b Builder) buildRootfsDirectoryState(ctx context.Context, opts BuildOpts) 
 }
 
 // packDirectoryState solves a directory of a StateSource on the one platform
-// of opts, and packages it.
-func (b Builder) packDirectoryState(ctx context.Context, s *solver, opts BuildOpts) ([]*imagespec.Image, error) {
+// of opts, and packages it, reporting both as steps of part.
+func (b Builder) packDirectoryState(ctx context.Context, s *solver, opts BuildOpts, part string) ([]*imagespec.Image, error) {
 	st := opts.Rootfs.Source.(StateSource).State
 	dir := opts.Rootfs.Path
 	ep := getPlatform(opts.Platform[0])
@@ -407,7 +415,7 @@ func (b Builder) packDirectoryState(ctx context.Context, s *solver, opts BuildOp
 		os.Remove(tarDest.Name())
 	}()
 
-	err = s.solveToTar(ctx, tarDest, ep.ID, client.SolveOpt{},
+	err = s.solveToTar(ctx, tarDest, partPrefix(part, opts.Platform[0]), client.SolveOpt{},
 		func(ctx context.Context, c gateway.Client) (*gateway.Result, error) {
 			res, err := c.Solve(ctx, gateway.SolveRequest{
 				Definition: def.ToPB(),
@@ -445,12 +453,12 @@ func (b Builder) packDirectoryState(ctx context.Context, s *solver, opts BuildOp
 	if err != nil {
 		return nil, fmt.Errorf("could not open tarball as filesystem: %w", err)
 	}
-	return b.packRootfs(ctx, opts, srcFS)
+	return b.packRootfs(ctx, opts, part, srcFS)
 }
 
 // buildRootfsTarball opens the source tarball as an fs.FS and packages it
 // into the requested rootfs format (CPIO or EroFS) for each platform.
-func (b Builder) buildRootfsTarball(ctx context.Context, opts BuildOpts) ([]*imagespec.Image, error) {
+func (b Builder) buildRootfsTarball(ctx context.Context, opts BuildOpts, part string) ([]*imagespec.Image, error) {
 	tarFile, err := os.Open(opts.Rootfs.Path)
 	if err != nil {
 		return nil, fmt.Errorf("could not open tarball: %w", err)
@@ -461,12 +469,12 @@ func (b Builder) buildRootfsTarball(ctx context.Context, opts BuildOpts) ([]*ima
 	if err != nil {
 		return nil, fmt.Errorf("could not open tarball as filesystem: %w", err)
 	}
-	return b.packRootfs(ctx, opts, srcFS)
+	return b.packRootfs(ctx, opts, part, srcFS)
 }
 
 // packRootfs packages srcFS into a temporary rootfs file (CPIO or EroFS, based
-// on opts.Rootfs.Format) for each platform.
-func (b Builder) packRootfs(ctx context.Context, opts BuildOpts, srcFS fs.FS) (_ []*imagespec.Image, rerr error) {
+// on opts.Rootfs.Format) for each platform, as a step of part.
+func (b Builder) packRootfs(ctx context.Context, opts BuildOpts, part string, srcFS fs.FS) (_ []*imagespec.Image, rerr error) {
 	cfg := applyConfigOverrides(ocispec.ImageConfig{}, opts)
 
 	var imgs []*imagespec.Image
@@ -482,7 +490,7 @@ func (b Builder) packRootfs(ctx context.Context, opts BuildOpts, srcFS fs.FS) (_
 			}
 		}()
 
-		if err := packageFS(ctx, opts.Rootfs.Format, f, srcFS, opts.Rootfs); err != nil {
+		if err := b.pack(ctx, part, p, opts, opts.Rootfs.Format, f, srcFS); err != nil {
 			return nil, err
 		}
 
@@ -498,7 +506,7 @@ func (b Builder) packRootfs(ctx context.Context, opts BuildOpts, srcFS fs.FS) (_
 // buildRootfsOCI pulls an OCI image and builds a rootfs from it for each
 // requested platform. Two kinds of images are supported: Regular OCI and
 // Unikraft images
-func (b Builder) buildRootfsOCI(ctx context.Context, opts BuildOpts) (_ []*imagespec.Image, rerr error) {
+func (b Builder) buildRootfsOCI(ctx context.Context, opts BuildOpts, part string) (_ []*imagespec.Image, rerr error) {
 	access, err := b.images(ctx)
 	if err != nil {
 		return nil, err
@@ -516,9 +524,20 @@ func (b Builder) buildRootfsOCI(ctx context.Context, opts BuildOpts) (_ []*image
 	}
 
 	matcher := platforms.Any(wanted...)
-	loaded, err := access.LoadAll(ctx, uri, matcher)
+	var loaded []*imagespec.Image
+	verb := "load"
+	if uri.Scheme == schemes.OCI {
+		verb = "pull"
+	}
+	err = progress.Step(progress.WithPrefix(b.progressWriter(), part), verb+" "+opts.Rootfs.Path, func() (err error) {
+		loaded, err = access.LoadAll(ctx, uri, matcher)
+		if err != nil {
+			return fmt.Errorf("pulling rootfs image %q: %w", opts.Rootfs.Path, err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("pulling rootfs image %q: %w", opts.Rootfs.Path, err)
+		return nil, err
 	}
 	defer func() {
 		for _, img := range loaded {
@@ -568,34 +587,11 @@ func (b Builder) buildRootfsOCI(ctx context.Context, opts BuildOpts) (_ []*image
 				}
 			}()
 
-			rc, _, err := src.Initrd.Open(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("opening rootfs layer: %w", err)
-			}
-			if _, err := io.Copy(f, rc); err != nil {
-				rc.Close()
-				return nil, fmt.Errorf("reading rootfs layer: %w", err)
-			}
-			if err := rc.Close(); err != nil {
-				return nil, fmt.Errorf("closing rootfs layer: %w", err)
-			}
-			if err := f.Sync(); err != nil {
-				return nil, fmt.Errorf("could not sync file: %w", err)
-			}
-
-			format, err := detectPackagedFormat(f.Name())
-			if err != nil {
-				return nil, fmt.Errorf("inspecting initrd of rootfs image %q: %w", opts.Rootfs.Path, err)
-			}
-			if opts.Rootfs.Format != "" && opts.Rootfs.Format != format {
-				return nil, fmt.Errorf("unsupported rootfs format mismatch: source is %s but requested format is %s", format, opts.Rootfs.Format)
-			}
-
-			if err := padFile(f, opts.Rootfs.Pad); err != nil {
+			w := progress.WithPrefix(b.progressWriter(), partPrefix(part, p))
+			if err := progress.Step(w, "copy initrd of "+opts.Rootfs.Path, func() error {
+				return copyInitrd(ctx, f, src.Initrd, opts)
+			}); err != nil {
 				return nil, err
-			}
-			if err := f.Sync(); err != nil {
-				return nil, fmt.Errorf("could not sync file: %w", err)
 			}
 
 			imgs = append(imgs, imagespec.NewImage(
@@ -632,7 +628,7 @@ func (b Builder) buildRootfsOCI(ctx context.Context, opts BuildOpts) (_ []*image
 				os.Remove(layers.Name())
 			}()
 
-			if err := flattenImageLayers(ctx, s, opts, src, uri, layers); err != nil {
+			if err := flattenImageLayers(ctx, s, opts, src, uri, layers, partPrefix(part, p)); err != nil {
 				return nil, err
 			}
 
@@ -654,7 +650,7 @@ func (b Builder) buildRootfsOCI(ctx context.Context, opts BuildOpts) (_ []*image
 			}
 		}()
 
-		if err := packageFS(ctx, format, f, srcFS, opts.Rootfs); err != nil {
+		if err := b.pack(ctx, part, p, opts, format, f, srcFS); err != nil {
 			return nil, err
 		}
 
@@ -668,10 +664,47 @@ func (b Builder) buildRootfsOCI(ctx context.Context, opts BuildOpts) (_ []*image
 	return imgs, nil
 }
 
+// copyInitrd writes the initrd of a Unikraft image to f as it is, padded as
+// opts asks, and checks that its format is the one opts asks for.
+func copyInitrd(ctx context.Context, f *os.File, initrd imagespec.File, opts BuildOpts) error {
+	rc, _, err := initrd.Open(ctx)
+	if err != nil {
+		return fmt.Errorf("opening rootfs layer: %w", err)
+	}
+	if _, err := io.Copy(f, rc); err != nil {
+		rc.Close()
+		return fmt.Errorf("reading rootfs layer: %w", err)
+	}
+	if err := rc.Close(); err != nil {
+		return fmt.Errorf("closing rootfs layer: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("could not sync file: %w", err)
+	}
+
+	format, err := detectPackagedFormat(f.Name())
+	if err != nil {
+		return fmt.Errorf("inspecting initrd of rootfs image %q: %w", opts.Rootfs.Path, err)
+	}
+	if opts.Rootfs.Format != "" && opts.Rootfs.Format != format {
+		return fmt.Errorf("unsupported rootfs format mismatch: source is %s but requested format is %s", format, opts.Rootfs.Format)
+	}
+
+	if err := padFile(f, opts.Rootfs.Pad); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("could not sync file: %w", err)
+	}
+
+	return nil
+}
+
 // flattenImageLayers writes the flattened filesystem of a regular OCI image to
 // dst as an uncompressed tarball, using BuildKit to do the flattening. The
-// image must come from a registry and have a config.
-func flattenImageLayers(ctx context.Context, s *solver, opts BuildOpts, src *imagespec.Image, uri *imagespec.Location, dst *os.File) error {
+// image must come from a registry and have a config. The progress of the
+// solve is reported under prefix.
+func flattenImageLayers(ctx context.Context, s *solver, opts BuildOpts, src *imagespec.Image, uri *imagespec.Location, dst *os.File, prefix string) error {
 	ref := uri.Path
 	if src.Descriptor.Digest != "" && !strings.Contains(ref, "@") {
 		ref += "@" + src.Descriptor.Digest.String()
@@ -691,7 +724,7 @@ func flattenImageLayers(ctx context.Context, s *solver, opts BuildOpts, src *ima
 		return fmt.Errorf("marshalling rootfs image source: %w", err)
 	}
 
-	err = s.solveToTar(ctx, dst, ep.ID, client.SolveOpt{},
+	err = s.solveToTar(ctx, dst, prefix, client.SolveOpt{},
 		func(ctx context.Context, c gateway.Client) (*gateway.Result, error) {
 			return c.Solve(ctx, gateway.SolveRequest{
 				Definition: def.ToPB(),
@@ -705,7 +738,7 @@ func flattenImageLayers(ctx context.Context, s *solver, opts BuildOpts, src *ima
 	return nil
 }
 
-func (b Builder) buildRootfsDockerfile(ctx context.Context, opts BuildOpts) (_ []*imagespec.Image, rerr error) {
+func (b Builder) buildRootfsDockerfile(ctx context.Context, opts BuildOpts, part string) (_ []*imagespec.Image, rerr error) {
 	s, err := b.newSolver(ctx)
 	if err != nil {
 		return nil, err
@@ -764,7 +797,7 @@ func (b Builder) buildRootfsDockerfile(ctx context.Context, opts BuildOpts) (_ [
 		}
 
 		var config ocispec.Image
-		err = s.solveToTar(ctx, tarDest, ep.ID, solveOpt, func(ctx context.Context, c gateway.Client) (*gateway.Result, error) {
+		err = s.solveToTar(ctx, tarDest, partPrefix(part, p), solveOpt, func(ctx context.Context, c gateway.Client) (*gateway.Result, error) {
 			res, err := c.Solve(ctx, gateway.SolveRequest{
 				Frontend:       solveOpt.Frontend,
 				FrontendOpt:    solveOpt.FrontendAttrs,
@@ -802,7 +835,7 @@ func (b Builder) buildRootfsDockerfile(ctx context.Context, opts BuildOpts) (_ [
 			}
 		}()
 
-		if err := packageFS(ctx, opts.Rootfs.Format, f, srcFS, opts.Rootfs); err != nil {
+		if err := b.pack(ctx, part, p, opts, opts.Rootfs.Format, f, srcFS); err != nil {
 			return nil, err
 		}
 
@@ -814,6 +847,21 @@ func (b Builder) buildRootfsDockerfile(ctx context.Context, opts BuildOpts) (_ [
 	}
 
 	return imgs, nil
+}
+
+// partPrefix names the part of the image a step builds and the platform it
+// builds it for, the way buildkit names the steps of a multi-platform build.
+func partPrefix(part string, p ocispec.Platform) string {
+	return part + " " + platforms.Format(p)
+}
+
+// pack writes srcFS to destFS in format, as the step that packs part for
+// platform p.
+func (b Builder) pack(ctx context.Context, part string, p ocispec.Platform, opts BuildOpts, format kraftfile.FsType, destFS *os.File, srcFS fs.FS) error {
+	w := progress.WithPrefix(b.progressWriter(), partPrefix("pack", p))
+	return progress.Step(w, part+" as "+string(format), func() error {
+		return packageFS(ctx, format, destFS, srcFS, opts.Rootfs)
+	})
 }
 
 func packageFS(ctx context.Context, format kraftfile.FsType, destFS *os.File, srcFS fs.FS, opts FSOpts) error {

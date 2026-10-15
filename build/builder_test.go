@@ -10,12 +10,16 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/session"
+	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	imagespec "unikraft.com/x/image-spec"
 	"unikraft.com/x/kraftfile"
@@ -143,4 +147,118 @@ func TestRootfsTempDir(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
+}
+
+// progressRecorder keeps every vertex reported to it, in order.
+type progressRecorder struct {
+	mu       sync.Mutex
+	vertices []*client.Vertex
+}
+
+func (r *progressRecorder) Write(ss *client.SolveStatus) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.vertices = append(r.vertices, ss.Vertexes...)
+}
+
+// steps returns the name of each step reported, in the order they started.
+func (r *progressRecorder) steps() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var names []string
+	seen := map[digest.Digest]bool{}
+	for _, v := range r.vertices {
+		if !seen[v.Digest] {
+			seen[v.Digest] = true
+			names = append(names, v.Name)
+		}
+	}
+	return names
+}
+
+// ended returns how the step named name was reported to end, or nil when it
+// was not.
+func (r *progressRecorder) ended(name string) *client.Vertex {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, v := range slices.Backward(r.vertices) {
+		if v.Name == name && v.Completed != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+// closeImages closes imgs once the test is done.
+func closeImages(t *testing.T, imgs []*imagespec.Image) {
+	t.Helper()
+	t.Cleanup(func() {
+		for _, img := range imgs {
+			_ = img.Close()
+		}
+	})
+}
+
+func TestProgressPackIsAStepPerPlatform(t *testing.T) {
+	var rec progressRecorder
+	imgs, err := Builder{Progress: &rec}.BuildRootfs(t.Context(), BuildOpts{
+		Rootfs: FSOpts{
+			Path:   writeTestDirectory(t),
+			Type:   kraftfile.SourceTypeDirectory,
+			Format: kraftfile.FsTypeCpio,
+		},
+		Platform: []ocispec.Platform{
+			{OS: "fc", Architecture: "x86_64"},
+			{OS: "fc", Architecture: "arm64"},
+		},
+	})
+	require.NoError(t, err)
+	closeImages(t, imgs)
+
+	require.Equal(t, []string{
+		"[pack fc/x86_64] rootfs as cpio",
+		"[pack fc/arm64] rootfs as cpio",
+	}, rec.steps())
+}
+
+func TestProgressRomsAndRootfsArePackedUnderTheirNames(t *testing.T) {
+	dir := writeTestDirectory(t)
+	fs := FSOpts{Path: dir, Type: kraftfile.SourceTypeDirectory, Format: kraftfile.FsTypeErofs}
+
+	var rec progressRecorder
+	imgs, err := Builder{Progress: &rec}.Build(t.Context(), BuildOpts{
+		Rootfs:   fs,
+		Roms:     []FSOpts{fs, fs},
+		Platform: []ocispec.Platform{{OS: "fc", Architecture: "x86_64"}},
+	})
+	require.NoError(t, err)
+	closeImages(t, imgs)
+
+	require.Equal(t, []string{
+		"[pack fc/x86_64] rom 1 as erofs",
+		"[pack fc/x86_64] rom 2 as erofs",
+		"[pack fc/x86_64] rootfs as erofs",
+	}, rec.steps())
+}
+
+func TestProgressUnikraftImageIsLoadedAndItsInitrdCopied(t *testing.T) {
+	path := "oci-archive://" + writeUnikraftOCIArchive(t, writeTestDirectory(t))
+
+	var rec progressRecorder
+	imgs, err := Builder{Progress: &rec}.BuildRootfs(t.Context(), BuildOpts{
+		Rootfs:   FSOpts{Path: path, Type: kraftfile.SourceTypeOCI},
+		Platform: []ocispec.Platform{{OS: "fc", Architecture: "x86_64"}},
+	})
+	require.NoError(t, err)
+	closeImages(t, imgs)
+
+	require.Equal(t, []string{
+		"[rootfs] load " + path,
+		"[rootfs fc/x86_64] copy initrd of " + path,
+	}, rec.steps())
+	copied := rec.ended("[rootfs fc/x86_64] copy initrd of " + path)
+	require.NotNil(t, copied)
+	assert.Empty(t, copied.Error)
 }

@@ -17,9 +17,10 @@ import (
 	gateway "github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/identity"
 	"github.com/moby/buildkit/session"
-	"github.com/moby/buildkit/util/progress/progresswriter"
 
 	ukio "unikraft.com/x/io"
+
+	"unikraft.com/x/build/progress"
 )
 
 // solver holds one BuildKit connection for several solves.
@@ -27,7 +28,7 @@ type solver struct {
 	client   *client.Client
 	cleanup  func()
 	session  []session.Attachable
-	progress func(ctx context.Context, prefix string) (progresswriter.Writer, error)
+	progress progress.Writer
 }
 
 func (b Builder) newSolver(ctx context.Context) (*solver, error) {
@@ -59,7 +60,7 @@ func (b Builder) newSolver(ctx context.Context) (*solver, error) {
 		client:   c,
 		cleanup:  cleanup,
 		session:  slices.Clone(attachables),
-		progress: b.Progress,
+		progress: b.progressWriter(),
 	}, nil
 }
 
@@ -70,7 +71,8 @@ func (s *solver) close() {
 }
 
 // solveToTar runs build, exporting an uncompressed tarball of the result to
-// dst, which is left synced and rewound. Progress is printed under prefix.
+// dst, which is left synced and rewound. The progress of the solve is
+// reported under prefix.
 func (s *solver) solveToTar(ctx context.Context, dst *os.File, prefix string, solveOpt client.SolveOpt, build gateway.BuildFunc) error {
 	solveOpt.Ref = identity.NewID()
 	solveOpt.Session = s.session
@@ -81,27 +83,13 @@ func (s *solver) solveToTar(ctx context.Context, dst *os.File, prefix string, so
 		},
 	}}
 
-	var pw progresswriter.Writer
-	if s.progress != nil {
-		var err error
-		pw, err = s.progress(ctx, prefix)
-		if err != nil {
-			return err
-		}
-	} else {
-		pw = newDiscardProgress()
-	}
-
-	if _, err := s.client.Build(ctx, solveOpt, "buildctl", build, pw.Status()); err != nil {
-		return err
-	}
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-pw.Done():
-	}
-	if err := pw.Err(); err != nil {
+	// Build closes the status channel when it returns, however it went, and
+	// the last statuses on it are what say how, so they are forwarded before
+	// the error is looked at.
+	statuses, done := progress.NewChannel(progress.WithPrefix(s.progress, prefix))
+	_, err := s.client.Build(ctx, solveOpt, "buildctl", build, statuses)
+	<-done
+	if err != nil {
 		return err
 	}
 

@@ -16,6 +16,8 @@ import (
 	"unikraft.com/x/image-spec/reference"
 	"unikraft.com/x/image-spec/schemes"
 	"unikraft.com/x/log"
+
+	"unikraft.com/x/build/progress"
 )
 
 // Saved tells where Save stored images.
@@ -40,7 +42,9 @@ func (b Builder) Save(ctx context.Context, dest *imagespec.Location, images ...*
 
 	// Only a registry needs the accessor, for its resolver and credentials.
 	access := imagespec.NewAccessor()
+	verb := "save"
 	if dest.Scheme == schemes.OCI {
+		verb = "push"
 		named, err := reference.ParseNormalizedNamed(dest.Path)
 		if err != nil {
 			return Saved{}, fmt.Errorf("parsing image reference %q: %w", dest.Path, err)
@@ -51,7 +55,11 @@ func (b Builder) Save(ctx context.Context, dest *imagespec.Location, images ...*
 		}
 	}
 
-	desc, err := access.Save(ctx, dest, images...)
+	var desc ocispec.Descriptor
+	err := progress.Step(progress.WithPrefix(b.progressWriter(), verb), saved.Ref, func() (err error) {
+		desc, err = access.Save(ctx, dest, images...)
+		return err
+	})
 	if err != nil {
 		return Saved{}, err
 	}
