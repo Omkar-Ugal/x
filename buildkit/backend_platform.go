@@ -9,6 +9,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -31,6 +32,10 @@ const (
 
 	readyTimeout = 2 * time.Minute
 )
+
+// ErrQuota is returned by Platform when the caller's account is over its
+// quota, thus the builder cannot be created or started.
+var ErrQuota = errors.New("builder quota exceeded")
 
 // Platform runs builders as instances in the caller's Unikraft Cloud account.
 type Platform struct {
@@ -91,7 +96,7 @@ func NewPlatform(c platform.Client, opts ...Option) *Platform {
 }
 
 // Acquire implements Backend. It creates the builder for key with a cache
-// volume if there is none, and starts it if it was stopped.
+// volume if there is none, and starts it if it was stopped or in standby.
 func (p *Platform) Acquire(ctx context.Context, key Key) (*Daemon, error) {
 	name := "buildkit-" + cmp.Or(key.Name, "default")
 	// The builder may be booting, waking from standby or shutting down.
@@ -152,11 +157,13 @@ func (p *Platform) instance(ctx context.Context, name string) (*platform.Instanc
 			return nil, fmt.Errorf("builder %s was deleted while stopping", name)
 		}
 	}
-	if inst.State == platform.InstanceStateStopped {
+	// The edge also wakes a builder in standby, but only a start tells why the
+	// platform refuses it.
+	if inst.State == platform.InstanceStateStopped || inst.State == platform.InstanceStateStandby {
 		_, err := p.c.StartInstanceByUUID(ctx, inst.Uuid, platform.StartInstanceByUUIDRequestBody{})
 		// A concurrent Acquire may have started it.
 		if err != nil && !platform.ErrorContainsOnly(err, platform.APIHTTPErrorFailedWrongVMState) {
-			return nil, fmt.Errorf("starting builder %s: %w", name, err)
+			return nil, fmt.Errorf("starting builder %s: %w", name, quota(err))
 		}
 	}
 	return inst, nil
@@ -183,7 +190,7 @@ func (p *Platform) create(ctx context.Context, name string) error {
 	vol := name + "-cache"
 	_, err := p.c.CreateVolume(ctx, platform.CreateVolumeRequest{Name: &vol, SizeMb: new(p.cacheMB)})
 	if err != nil && !platform.ErrorContainsOnly(err, platform.APIHTTPErrorAlreadyExists) {
-		return fmt.Errorf("creating cache volume %s: %w", vol, err)
+		return fmt.Errorf("creating cache volume %s: %w", vol, quota(err))
 	}
 
 	env, err := generateCerts()
@@ -212,9 +219,18 @@ func (p *Platform) create(ctx context.Context, name string) error {
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("creating builder %s: %w", name, err)
+		return fmt.Errorf("creating builder %s: %w", name, quota(err))
 	}
 	return nil
+}
+
+// quota adds ErrQuota to err if the platform refused the request because of
+// the caller's quota.
+func quota(err error) error {
+	if platform.ErrorContains(err, platform.APIHTTPErrorQuota) {
+		return fmt.Errorf("%w: %w", ErrQuota, err)
+	}
+	return err
 }
 
 // gcKeepStorage returns the garbage collection limits for a cache volume of
