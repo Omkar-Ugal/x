@@ -51,6 +51,9 @@ func ParseLocationDefault(src string) (*Location, error) {
 // GuessLocation is an opinionated parser that attempts to determine the URI scheme
 // based on the input string.
 //
+// Only inputs that start with "./", "../" or "/" are treated as local paths,
+// everything else is a registry reference, even if a file of that name exists.
+//
 // This function is intended to be used for user input, simplifying the
 // experience by allowing the scheme to be inferred. However, avoid using it
 // for parsing structured output, since you should be able to rely on more
@@ -58,6 +61,13 @@ func ParseLocationDefault(src string) (*Location, error) {
 func GuessLocation(src string) (*Location, error) {
 	if scheme, path, ok := strings.Cut(src, "://"); ok {
 		return newLocation(scheme, path)
+	}
+
+	if !looksLikePath(src) {
+		return &Location{
+			Scheme: schemes.OCI,
+			Path:   src,
+		}, nil
 	}
 
 	var stat os.FileInfo
@@ -124,14 +134,7 @@ func GuessLocation(src string) (*Location, error) {
 		}
 	}
 
-	if looksLikePath(src) {
-		return nil, fmt.Errorf("ambiguous path: %s", src)
-	}
-
-	return &Location{
-		Scheme: schemes.OCI,
-		Path:   src,
-	}, nil
+	return nil, fmt.Errorf("ambiguous path: %s", src)
 }
 
 func newLocation(scheme string, path string) (*Location, error) {
@@ -170,7 +173,18 @@ func splitPathTag(src string) (string, string) {
 }
 
 func looksLikePath(s string) bool {
-	return strings.HasPrefix(s, ".") || (s != "" && os.IsPathSeparator(s[0])) || filepath.VolumeName(s) != ""
+	if s == "." || s == ".." || filepath.VolumeName(s) != "" {
+		return true
+	}
+	if s != "" && os.IsPathSeparator(s[0]) {
+		return true
+	}
+	for _, prefix := range []string{".", ".."} {
+		if rest, ok := strings.CutPrefix(s, prefix); ok && rest != "" && os.IsPathSeparator(rest[0]) {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikeDir(s string) bool {
