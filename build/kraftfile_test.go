@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/moby/buildkit/client/llb"
 	"github.com/stretchr/testify/require"
 
 	"unikraft.com/x/kraftfile"
@@ -44,7 +45,7 @@ func TestKraftfileToBuildOpts(t *testing.T) {
 		},
 	}
 
-	opts, err := kraftfileToBuildOpts(rootfsDir, kf)
+	opts, err := KraftfileBuildOpts(kf, LocalSource{Dir: rootfsDir})
 	require.NoError(t, err)
 	require.Equal(t, []string{"/server", "--flag"}, opts.Cmd)
 	require.Equal(t, kraftfile.Map{{Key: "A", Value: "1"}}, opts.Env)
@@ -84,12 +85,33 @@ func TestKraftfileToBuildOptsResolvesSources(t *testing.T) {
 		},
 	}
 
-	opts, err := kraftfileToBuildOpts(rootfsDir, kf)
+	opts, err := KraftfileBuildOpts(kf, LocalSource{Dir: rootfsDir})
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(rootfsDir, "Dockerfile"), opts.Rootfs.Path)
 	require.Equal(t, kraftfile.SourceTypeDockerfile, opts.Rootfs.Type)
 	require.Len(t, opts.Roms, 1)
 	require.Equal(t, romPath, opts.Roms[0].Path)
+	require.Equal(t, kraftfile.SourceTypeDirectory, opts.Roms[0].Type)
+}
+
+func TestKraftfileToBuildOptsStateSource(t *testing.T) {
+	kf := &kraftfile.Kraftfile{
+		Rootfs: &kraftfile.FS{
+			Source: &kraftfile.FSSource{Path: "./app/Dockerfile"},
+		},
+		Roms: []kraftfile.FS{
+			{Source: &kraftfile.FSSource{Path: "./public/"}},
+		},
+	}
+
+	opts, err := KraftfileBuildOpts(kf, StateSource{State: llb.Scratch()})
+	require.NoError(t, err)
+	require.IsType(t, StateSource{}, opts.Rootfs.Source)
+	require.Equal(t, "app/Dockerfile", opts.Rootfs.Path)
+	require.Equal(t, kraftfile.SourceTypeDockerfile, opts.Rootfs.Type)
+	require.Len(t, opts.Roms, 1)
+	require.IsType(t, StateSource{}, opts.Roms[0].Source)
+	require.Equal(t, "public", opts.Roms[0].Path)
 	require.Equal(t, kraftfile.SourceTypeDirectory, opts.Roms[0].Type)
 }
 
@@ -104,7 +126,7 @@ func TestKraftfileToBuildOptsMissingSource(t *testing.T) {
 		},
 	}
 
-	_, err := kraftfileToBuildOpts(t.TempDir(), kf)
+	_, err := KraftfileBuildOpts(kf, LocalSource{Dir: t.TempDir()})
 	require.ErrorIs(t, err, fs.ErrNotExist)
 	require.ErrorContains(t, err, "resolving rootfs source")
 }
@@ -125,7 +147,7 @@ func TestKraftfileToBuildOptsDockerfileWithType(t *testing.T) {
 		},
 	}
 
-	opts, err := kraftfileToBuildOpts(rootfsDir, kf)
+	opts, err := KraftfileBuildOpts(kf, LocalSource{Dir: rootfsDir})
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(rootfsDir, "context"), opts.Rootfs.Path)
 	require.Equal(t, "MyDockerfile", opts.Rootfs.Dockerfile)
@@ -148,7 +170,7 @@ func TestKraftfileToBuildOptsDockerfileWithoutType(t *testing.T) {
 		},
 	}
 
-	opts, err := kraftfileToBuildOpts(rootfsDir, kf)
+	opts, err := KraftfileBuildOpts(kf, LocalSource{Dir: rootfsDir})
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(rootfsDir, "context"), opts.Rootfs.Path)
 	require.Equal(t, "MyDockerfile", opts.Rootfs.Dockerfile)
@@ -172,7 +194,7 @@ func TestKraftfileToBuildOptsNoRootfs(t *testing.T) {
 		},
 	}
 
-	opts, err := kraftfileToBuildOpts(rootfsDir, kf)
+	opts, err := KraftfileBuildOpts(kf, LocalSource{Dir: rootfsDir})
 	require.NoError(t, err)
 	require.Equal(t, "unikraft.io/unikraft.org/base", opts.Runtime)
 	require.Empty(t, opts.Rootfs.Path)
@@ -201,7 +223,7 @@ func TestKraftfileToBuildOptsRootfsOCIType(t *testing.T) {
 		},
 	}
 
-	opts, err := kraftfileToBuildOpts(rootfsDir, kf)
+	opts, err := KraftfileBuildOpts(kf, LocalSource{Dir: rootfsDir})
 	require.NoError(t, err)
 	require.Equal(t, "index.docker.io/hello-world:latest", opts.Rootfs.Path,
 		"OCI rootfs reference must not be joined with the kraftfile directory")

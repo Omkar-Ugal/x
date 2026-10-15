@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -26,6 +27,7 @@ import (
 	"github.com/moby/buildkit/exporter/containerimage/exptypes"
 	gateway "github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/session"
+	"github.com/moby/buildkit/solver/pb"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/tonistiigi/fsutil"
 	imagespec "unikraft.com/x/image-spec"
@@ -70,13 +72,18 @@ func applyConfigOverrides(base ocispec.ImageConfig, opts BuildOpts) ocispec.Imag
 	return cfg
 }
 
+// isDockerfile reports whether the file name names a Dockerfile.
+func isDockerfile(name string) bool {
+	return slices.Contains(strings.Split(name, "."), defaultDockerfileName)
+}
+
 // DetectSourceType inspects path and returns the detected RootfsType.
 func DetectSourceType(path string) (kraftfile.SourceType, error) {
 	if path == "" {
 		return "", fmt.Errorf("empty rootfs path")
 	}
 
-	if slices.Contains(strings.Split(filepath.Base(path), "."), defaultDockerfileName) {
+	if isDockerfile(filepath.Base(path)) {
 		return kraftfile.SourceTypeDockerfile, nil
 	}
 
@@ -123,18 +130,18 @@ func detectPackagedFormat(path string) (kraftfile.FsType, error) {
 	}
 }
 
-// resolveSource resolves the source of fsOpts against root and fills in the
+// resolveSource resolves the path of fsOpts in its Source and fills in the
 // source type when it was not requested explicitly.
-func resolveSource(root string, fsOpts *FSOpts) error {
-	if fsOpts.Type == kraftfile.SourceTypeOCI {
-		if fsOpts.Dockerfile != "" {
-			return fmt.Errorf("a dockerfile cannot be set when the source type is %q", kraftfile.SourceTypeOCI)
-		}
-		return nil
+func resolveSource(fsOpts *FSOpts) error {
+	if fsOpts.Type == kraftfile.SourceTypeOCI && fsOpts.Dockerfile != "" {
+		return fmt.Errorf("a dockerfile cannot be set when the source type is %q", kraftfile.SourceTypeOCI)
 	}
 
-	if root != "" {
-		fsOpts.Path = filepath.Join(root, fsOpts.Path)
+	if err := localize(fsOpts); err != nil {
+		return err
+	}
+	if fsOpts.Type == kraftfile.SourceTypeOCI {
+		return nil
 	}
 
 	if fsOpts.Dockerfile != "" {
@@ -142,6 +149,17 @@ func resolveSource(root string, fsOpts *FSOpts) error {
 			return fmt.Errorf("source type must be %q when a dockerfile is set, got %q", kraftfile.SourceTypeDockerfile, fsOpts.Type)
 		}
 		fsOpts.Type = kraftfile.SourceTypeDockerfile
+	}
+
+	// BuildKit cannot stat a path in LLB, thus only the name selects the type.
+	if _, ok := fsOpts.Source.(StateSource); ok {
+		if fsOpts.Type == "" {
+			fsOpts.Type = kraftfile.SourceTypeDirectory
+			if isDockerfile(path.Base(fsOpts.Path)) {
+				fsOpts.Type = kraftfile.SourceTypeDockerfile
+			}
+		}
+		return resolveState(fsOpts)
 	}
 
 	if fsOpts.Type == "" {
@@ -175,6 +193,7 @@ func (b Builder) buildRoms(ctx context.Context, opts BuildOpts) (_ [][]imagespec
 	for _, rom := range opts.Roms {
 		romBuildOpts := BuildOpts{
 			Rootfs: FSOpts{
+				Source: rom.Source,
 				Path:   rom.Path,
 				Type:   rom.Type,
 				Format: cmp.Or(rom.Format, kraftfile.FsTypeErofs),
@@ -221,6 +240,16 @@ func (b Builder) BuildRootfs(ctx context.Context, opts BuildOpts) (_ []*imagespe
 		return nil, fmt.Errorf("at least one platform must be specified")
 	}
 
+	if err := localize(&opts.Rootfs); err != nil {
+		return nil, err
+	}
+	_, fromState := opts.Rootfs.Source.(StateSource)
+	if fromState {
+		if err := resolveState(&opts.Rootfs); err != nil {
+			return nil, err
+		}
+	}
+
 	if opts.Rootfs.Format == "" &&
 		opts.Rootfs.Type != kraftfile.SourceTypeCpio &&
 		opts.Rootfs.Type != kraftfile.SourceTypeErofs &&
@@ -249,10 +278,16 @@ func (b Builder) BuildRootfs(ctx context.Context, opts BuildOpts) (_ []*imagespe
 
 		return buildRootfsPackaged(ctx, opts)
 	case kraftfile.SourceTypeDirectory:
+		if fromState {
+			return b.buildRootfsDirectoryState(ctx, opts)
+		}
 		return b.buildRootfsDirectory(ctx, opts)
 	case kraftfile.SourceTypeTarball:
 		return b.buildRootfsTarball(ctx, opts)
 	case kraftfile.SourceTypeDockerfile:
+		if fromState {
+			return b.buildRootfsDockerfile(ctx, opts)
+		}
 		if _, err := os.Stat(opts.Rootfs.Path); err != nil {
 			if os.IsNotExist(err) {
 				return nil, fmt.Errorf("dockerfile context does not exist")
@@ -305,44 +340,117 @@ func buildRootfsPackaged(_ context.Context, opts BuildOpts) (_ []*imagespec.Imag
 
 // buildRootfsFromDirectory archives the source directory into a temporary
 // rootfs file (CPIO or EroFS, based on opts.Rootfs.Format) for each platform.
-func (b Builder) buildRootfsDirectory(ctx context.Context, opts BuildOpts) (_ []*imagespec.Image, rerr error) {
-	cfg := applyConfigOverrides(ocispec.ImageConfig{}, opts)
+func (b Builder) buildRootfsDirectory(ctx context.Context, opts BuildOpts) ([]*imagespec.Image, error) {
+	srcFS := os.DirFS(opts.Rootfs.Path)
+	if runtime.GOOS == "windows" {
+		srcFS = buildfs.WindowsDirFS(srcFS)
+	}
+	return b.packRootfs(ctx, opts, srcFS)
+}
+
+// buildRootfsDirectoryState packages a directory of a StateSource for each
+// platform. The state can depend on the platform, thus each one has a solve.
+func (b Builder) buildRootfsDirectoryState(ctx context.Context, opts BuildOpts) (_ []*imagespec.Image, rerr error) {
+	s, err := b.newSolver(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer s.close()
+
+	if err := addBuildSessions(&s.session, opts); err != nil {
+		return nil, err
+	}
 
 	var imgs []*imagespec.Image
-	for _, p := range opts.Platform {
-		f, err := os.CreateTemp(b.TempDir, "unikraft-rootfs-*."+string(opts.Rootfs.Format))
-		if err != nil {
-			return nil, fmt.Errorf("could not create temporary file: %w", err)
-		}
-		defer func() {
-			if rerr != nil && f != nil {
-				f.Close()
-				os.Remove(f.Name())
+	defer func() {
+		if rerr != nil {
+			for _, img := range imgs {
+				_ = img.Close()
 			}
-		}()
-
-		srcFS := os.DirFS(opts.Rootfs.Path)
-		if runtime.GOOS == "windows" {
-			srcFS = buildfs.WindowsDirFS(srcFS)
 		}
-		if err := packageFS(ctx, opts.Rootfs.Format, f, srcFS, opts.Rootfs); err != nil {
+	}()
+
+	for _, p := range opts.Platform {
+		platOpts := opts
+		platOpts.Platform = []ocispec.Platform{p}
+		platImgs, err := b.packDirectoryState(ctx, s, platOpts)
+		if err != nil {
 			return nil, err
 		}
-
-		imgs = append(imgs, imagespec.NewImage(
-			imagespec.WithImageConfig(cfg),
-			imagespec.WithPlatform(p),
-			imagespec.WithInitrd(imagespec.NewTempOSFile(f)),
-		))
+		imgs = append(imgs, platImgs...)
 	}
 	return imgs, nil
 }
 
+// packDirectoryState solves a directory of a StateSource on the one platform
+// of opts, and packages it.
+func (b Builder) packDirectoryState(ctx context.Context, s *solver, opts BuildOpts) ([]*imagespec.Image, error) {
+	st := opts.Rootfs.Source.(StateSource).State
+	dir := opts.Rootfs.Path
+	ep := getPlatform(opts.Platform[0])
+
+	def, err := marshalState(ctx, st, ep.Platform, opts.NoCache)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling source: %w", err)
+	}
+	dirDef, err := marshalState(ctx, subdir(st, dir), ep.Platform, opts.NoCache)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling directory %q: %w", dir, err)
+	}
+
+	tarDest, err := os.CreateTemp(b.TempDir, "unikraft-buildkit-*.tar")
+	if err != nil {
+		return nil, fmt.Errorf("could not create temporary file: %w", err)
+	}
+	defer func() {
+		tarDest.Close()
+		os.Remove(tarDest.Name())
+	}()
+
+	err = s.solveToTar(ctx, tarDest, ep.ID, client.SolveOpt{},
+		func(ctx context.Context, c gateway.Client) (*gateway.Result, error) {
+			res, err := c.Solve(ctx, gateway.SolveRequest{
+				Definition: def.ToPB(),
+				Evaluate:   true,
+			})
+			if err != nil || dir == "." {
+				return res, err
+			}
+
+			ref, err := res.SingleRef()
+			if err != nil {
+				return nil, err
+			}
+			if ref == nil {
+				return nil, fmt.Errorf("the source is empty")
+			}
+			stat, err := ref.StatFile(ctx, gateway.StatRequest{Path: dir})
+			if err != nil {
+				return nil, err
+			}
+			if !os.FileMode(stat.Mode).IsDir() {
+				return nil, fmt.Errorf("%q is not a directory", dir)
+			}
+
+			return c.Solve(ctx, gateway.SolveRequest{
+				Definition: dirDef.ToPB(),
+				Evaluate:   true,
+			})
+		})
+	if err != nil {
+		return nil, fmt.Errorf("solving directory %q of the source: %w", dir, err)
+	}
+
+	srcFS, err := buildfs.TarballFS(tarDest)
+	if err != nil {
+		return nil, fmt.Errorf("could not open tarball as filesystem: %w", err)
+	}
+	return b.packRootfs(ctx, opts, srcFS)
+}
+
 // buildRootfsTarball opens the source tarball as an fs.FS and packages it
 // into the requested rootfs format (CPIO or EroFS) for each platform.
-func (b Builder) buildRootfsTarball(ctx context.Context, opts BuildOpts) (_ []*imagespec.Image, rerr error) {
-	cfg := applyConfigOverrides(ocispec.ImageConfig{}, opts)
-
+func (b Builder) buildRootfsTarball(ctx context.Context, opts BuildOpts) ([]*imagespec.Image, error) {
 	tarFile, err := os.Open(opts.Rootfs.Path)
 	if err != nil {
 		return nil, fmt.Errorf("could not open tarball: %w", err)
@@ -353,6 +461,13 @@ func (b Builder) buildRootfsTarball(ctx context.Context, opts BuildOpts) (_ []*i
 	if err != nil {
 		return nil, fmt.Errorf("could not open tarball as filesystem: %w", err)
 	}
+	return b.packRootfs(ctx, opts, srcFS)
+}
+
+// packRootfs packages srcFS into a temporary rootfs file (CPIO or EroFS, based
+// on opts.Rootfs.Format) for each platform.
+func (b Builder) packRootfs(ctx context.Context, opts BuildOpts, srcFS fs.FS) (_ []*imagespec.Image, rerr error) {
+	cfg := applyConfigOverrides(ocispec.ImageConfig{}, opts)
 
 	var imgs []*imagespec.Image
 	for _, p := range opts.Platform {
@@ -599,7 +714,8 @@ func (b Builder) buildRootfsDockerfile(ctx context.Context, opts BuildOpts) (_ [
 
 	attrs := map[string]string{}
 	localDirs := map[string]string{}
-	if err := applyBuildOpts(attrs, localDirs, &s.session, opts); err != nil {
+	inputs := map[string]llb.State{}
+	if err := applyBuildOpts(attrs, localDirs, inputs, &s.session, opts); err != nil {
 		return nil, err
 	}
 	localMounts := make(map[string]fsutil.FS, len(localDirs))
@@ -623,6 +739,15 @@ func (b Builder) buildRootfsDockerfile(ctx context.Context, opts BuildOpts) (_ [
 		platformAttrs := maps.Clone(attrs)
 		platformAttrs["platform"] = ep.ID
 
+		frontendInputs := make(map[string]*pb.Definition, len(inputs))
+		for name, st := range inputs {
+			def, err := marshalState(ctx, st, ep.Platform, opts.NoCache)
+			if err != nil {
+				return nil, fmt.Errorf("marshalling %s input: %w", name, err)
+			}
+			frontendInputs[name] = def.ToPB()
+		}
+
 		tarDest, err := os.CreateTemp(b.TempDir, "unikraft-buildkit-*.tar")
 		if err != nil {
 			return nil, fmt.Errorf("could not create temporary file: %w", err)
@@ -641,8 +766,9 @@ func (b Builder) buildRootfsDockerfile(ctx context.Context, opts BuildOpts) (_ [
 		var config ocispec.Image
 		err = s.solveToTar(ctx, tarDest, ep.ID, solveOpt, func(ctx context.Context, c gateway.Client) (*gateway.Result, error) {
 			res, err := c.Solve(ctx, gateway.SolveRequest{
-				Frontend:    solveOpt.Frontend,
-				FrontendOpt: solveOpt.FrontendAttrs,
+				Frontend:       solveOpt.Frontend,
+				FrontendOpt:    solveOpt.FrontendAttrs,
+				FrontendInputs: frontendInputs,
 			})
 			if err != nil {
 				return nil, err
@@ -696,9 +822,10 @@ func packageFS(ctx context.Context, format kraftfile.FsType, destFS *os.File, sr
 		Str("format", string(format)).
 		Msg("packaging rootfs")
 
-	// Directory owners apply only to the host, so set them to root.
+	// Owners of a host directory apply only to the host, so set them to root.
 	// Keep the owners from all other sources, as Docker does.
-	allRoot := opts.Type == kraftfile.SourceTypeDirectory
+	_, fromState := opts.Source.(StateSource)
+	allRoot := opts.Type == kraftfile.SourceTypeDirectory && !fromState
 
 	switch format {
 	case kraftfile.FsTypeCpio:
@@ -765,8 +892,18 @@ func padFile(f *os.File, pad int64) error {
 	return nil
 }
 
-func applyBuildOpts(attrs map[string]string, localDirs map[string]string, sessions *[]session.Attachable, opts BuildOpts) error {
-	if opts.Rootfs.Dockerfile != "" {
+func applyBuildOpts(attrs map[string]string, localDirs map[string]string, inputs map[string]llb.State, sessions *[]session.Attachable, opts BuildOpts) error {
+	// The frontend reads the Dockerfile from the full state, and the context
+	// from its directory in the state.
+	if c, ok := opts.Rootfs.Source.(StateSource); ok {
+		dir, filename := path.Dir(opts.Rootfs.Path), opts.Rootfs.Path
+		if opts.Rootfs.Dockerfile != "" {
+			dir, filename = opts.Rootfs.Path, path.Join(opts.Rootfs.Path, opts.Rootfs.Dockerfile)
+		}
+		attrs["filename"] = filename
+		inputs["context"] = subdir(c.State, dir)
+		inputs["dockerfile"] = c.State
+	} else if opts.Rootfs.Dockerfile != "" {
 		localDirs["context"] = opts.Rootfs.Path
 		localDirs["dockerfile"] = filepath.Join(opts.Rootfs.Path, filepath.Dir(opts.Rootfs.Dockerfile))
 		attrs["filename"] = filepath.Base(opts.Rootfs.Dockerfile)
@@ -797,6 +934,11 @@ func applyBuildOpts(attrs map[string]string, localDirs map[string]string, sessio
 		attrs["build-arg:"+key] = val
 	}
 
+	return addBuildSessions(sessions, opts)
+}
+
+// addBuildSessions adds the secret and SSH providers of opts to sessions.
+func addBuildSessions(sessions *[]session.Attachable, opts BuildOpts) error {
 	if len(opts.Secrets) > 0 {
 		provider, err := buildflags.CreateSecrets(opts.Secrets)
 		if err != nil {
