@@ -15,6 +15,8 @@ import (
 	imagespec "unikraft.com/x/image-spec"
 	"unikraft.com/x/image-spec/schemes"
 	"unikraft.com/x/log"
+
+	"unikraft.com/x/build/progress"
 )
 
 // ErrNoRuntimeTarget tells that the runtime has no target of the selected
@@ -50,12 +52,19 @@ func (b Builder) buildKernel(ctx context.Context, opts BuildOpts) ([]*imagespec.
 		matcher = onlyArch(imagespec.ArchitectureIntel)
 	}
 
-	imgs, err := access.LoadAll(ctx, runtime, matcher)
-	if err != nil {
+	var imgs []*imagespec.Image
+	err = progress.Step(progress.WithPrefix(b.progressWriter(), "kernel"), "resolve "+opts.Runtime, func() (err error) {
+		imgs, err = access.LoadAll(ctx, runtime, matcher)
 		if len(opts.Platform) == 0 && errors.Is(err, errdefs.ErrNotFound) {
-			return nil, fmt.Errorf("%w for %s: %w", ErrNoRuntimeTarget, matcher, err)
+			return fmt.Errorf("%w for %s: %w", ErrNoRuntimeTarget, matcher, err)
 		}
-		return nil, fmt.Errorf("loading runtime image: %w", err)
+		if err != nil {
+			return fmt.Errorf("loading runtime image: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	imgPlatforms := map[string]struct{}{}

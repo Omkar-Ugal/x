@@ -130,8 +130,11 @@ func layoutDigest(t *testing.T, dir, tag string) digest.Digest {
 func TestSave(t *testing.T) {
 	t.Run("push to a registry with credentials", func(t *testing.T) {
 		host := startRegistry(t)
+		b := registryBuilder(alice)
+		var steps stepRecorder
+		b.Progress = &steps
 
-		saved, err := registryBuilder(alice).Save(t.Context(),
+		saved, err := b.Save(t.Context(),
 			&imagespec.Location{Scheme: schemes.OCI, Path: host + "/acme/app"},
 			testImages(fcIntel, fcArm)...)
 		require.NoError(t, err)
@@ -140,6 +143,7 @@ func TestSave(t *testing.T) {
 
 		// The registry resolves the tag to the index that Save reports.
 		assert.Equal(t, registryDigest(t, host, "acme/app", "latest"), saved.Digest)
+		assert.Equal(t, []string{"[push] " + host + "/acme/app:latest"}, steps.names)
 	})
 
 	t.Run("a local layout needs no accessor", func(t *testing.T) {

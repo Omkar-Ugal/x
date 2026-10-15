@@ -593,7 +593,7 @@ func TestRootfsStateDirectoryKeepsOwners(t *testing.T) {
 			Format: kraftfile.FsTypeCpio,
 		},
 		Platform: []ocispec.Platform{{OS: "fc", Architecture: "x86_64"}},
-	}, srcFS)
+	}, "rootfs", srcFS)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		for _, img := range imgs {
