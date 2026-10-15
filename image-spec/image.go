@@ -9,7 +9,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/containerd/containerd/v2/core/content"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"unikraft.com/x/image-spec/reference"
@@ -20,12 +19,9 @@ import (
 type Image struct {
 	// Resolved is where the image was loaded from (if available).
 	Resolved
-
-	// ManifestDescriptor is the OCI descriptor of the image manifest (if
-	// available).
+	// ManifestDescriptor is the OCI descriptor of the image manifest it was
+	// loaded from (if available).
 	ManifestDescriptor ocispec.Descriptor
-	// Provider is the content provider for the image (if available).
-	Provider content.Provider
 
 	// Image components
 	Kernel      File

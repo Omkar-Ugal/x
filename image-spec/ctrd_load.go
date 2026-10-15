@@ -61,7 +61,6 @@ func loadCtrdImageMfst(ctx context.Context, store content.Provider, desc ocispec
 		return nil, fmt.Errorf("failed to read image manifest: %w", err)
 	}
 	img := &Image{
-		Provider:           store,
 		ManifestDescriptor: desc,
 		Annotations:        mfst.Annotations,
 	}
