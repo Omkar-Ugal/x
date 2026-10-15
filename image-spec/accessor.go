@@ -71,9 +71,10 @@ func WithRegistryHeaders(headers http.Header) AccessOpt {
 	}
 }
 
-// Resolve pins src to the digest it currently names. A registry is asked
-// once, so Load does not have to ask again; a local layout or archive is on
-// disk already and is returned as given.
+// Resolve pins src to what it currently names, asking the remote: a registry
+// for the root its tag names, or an origin serving a layout over HTTP for the
+// URL it redirects a tag to. A local layout or archive has nothing to resolve,
+// and is returned as given.
 func (accessor *Accessor) Resolve(ctx context.Context, src *Location) (Resolved, error) {
 	switch src.Scheme {
 	case schemes.OCI:
@@ -111,12 +112,11 @@ func (accessor *Accessor) Resolve(ctx context.Context, src *Location) (Resolved,
 		}
 		location := Location{Scheme: src.Scheme, Path: pinned.Host + pinned.Path}
 		res := Resolved{Reference: requested, Location: location}
-		if dgst, err := tarballDigest(pinned); err == nil {
+		if err := namesDigest(pinned); err == nil {
 			res.ResolvedReference, err = reference.Parse(location.String())
 			if err != nil {
 				return Resolved{}, fmt.Errorf("naming resolved image %q: %w", pinned, err)
 			}
-			res.Descriptor = tarballDescriptor(dgst)
 		}
 		return res, nil
 
@@ -128,8 +128,10 @@ func (accessor *Accessor) Resolve(ctx context.Context, src *Location) (Resolved,
 	}
 }
 
-// Load loads the image a Resolve or Save pinned. A registry location that was
-// not pinned is resolved first.
+// Load loads the image res names, from res.Descriptor if it is set, and pins
+// the Resolved the image carries to the root it read, so that loading that
+// again reads the same content. A registry location without a descriptor is
+// resolved first.
 func (accessor *Accessor) Load(ctx context.Context, res Resolved, platform platforms.MatchComparer) (*Image, error) {
 	res, err := accessor.pin(ctx, res)
 	if err != nil {
@@ -151,7 +153,7 @@ func (accessor *Accessor) Load(ctx context.Context, res Resolved, platform platf
 		if err != nil {
 			return nil, fmt.Errorf("parsing image reference %q: %w", &res.Location, err)
 		}
-		img, err = LoadTarballRemote(ctx, ref.AsURL(), res.Descriptor.Digest, accessor.httpClient, accessor.registryHeaders, platform)
+		img, err = LoadTarballRemote(ctx, ref.AsURL(), res.Descriptor, accessor.httpClient, accessor.registryHeaders, platform)
 	case schemes.OCILayout:
 		path, tag := splitPathTag(res.Location.Path)
 		if res.Descriptor.Digest != "" {
@@ -166,6 +168,9 @@ func (accessor *Accessor) Load(ctx context.Context, res Resolved, platform platf
 	}
 	if err != nil {
 		return nil, err
+	}
+	if res.Descriptor.Digest == "" {
+		res.Descriptor = img.Descriptor
 	}
 	img.Resolved = res
 	return img, nil
@@ -193,7 +198,7 @@ func (accessor *Accessor) LoadAll(ctx context.Context, res Resolved, platform pl
 		if err != nil {
 			return nil, fmt.Errorf("parsing image reference %q: %w", &res.Location, err)
 		}
-		imgs, err = LoadAllTarballsRemote(ctx, ref.AsURL(), res.Descriptor.Digest, accessor.httpClient, accessor.registryHeaders, platform)
+		imgs, err = LoadAllTarballsRemote(ctx, ref.AsURL(), res.Descriptor, accessor.httpClient, accessor.registryHeaders, platform)
 	case schemes.OCILayout:
 		path, tag := splitPathTag(res.Location.Path)
 		if res.Descriptor.Digest != "" {
@@ -210,7 +215,11 @@ func (accessor *Accessor) LoadAll(ctx context.Context, res Resolved, platform pl
 		return nil, err
 	}
 	for _, img := range imgs {
-		img.Resolved = res
+		pinned := res
+		if pinned.Descriptor.Digest == "" {
+			pinned.Descriptor = img.Descriptor
+		}
+		img.Resolved = pinned
 	}
 	return imgs, nil
 }
@@ -224,8 +233,9 @@ func (accessor *Accessor) pin(ctx context.Context, res Resolved) (Resolved, erro
 	return accessor.Resolve(ctx, &res.Location)
 }
 
-// Save stores img at dest under one index, and returns dest pinned to that
-// index, so that Load reads back exactly what was saved.
+// Save stores img at dest under one index, and returns dest pinned to the
+// root it wrote, so that Load reads back exactly what was saved. For an
+// archive, that root is the archive's own index.json, which lists the index.
 func (accessor *Accessor) Save(ctx context.Context, dest *Location, img ...*Image) (Resolved, error) {
 	switch dest.Scheme {
 	case schemes.OCI:

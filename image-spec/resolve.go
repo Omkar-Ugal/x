@@ -11,27 +11,29 @@ import (
 	"unikraft.com/x/image-spec/reference"
 )
 
-// Resolved is a location pinned to the digest it named when it was resolved.
-// It is what an [Accessor] loads, and what an [Image] carries to say where it
-// came from.
+// Resolved is the result of resolving a location. Only a remote is ever
+// resolved: a registry, or an origin serving a layout over HTTP, is pinned to
+// what it names at the time, while a local layout or archive has nothing to
+// resolve and is kept as given. It is what an [Accessor] loads, and what an
+// [Image] carries to say where it was loaded from.
 type Resolved struct {
 	// Reference is the reference as requested, or zero for a local layout or
 	// archive.
 	Reference reference.Reference
-	// ResolvedReference names the image by digest where it was found, or zero
-	// for a local layout or archive. For a registry it is Reference without its
-	// tag and with its digest; for a layout served over HTTP it is the location
-	// the origin redirected to, or zero if it served the tag directly.
+	// ResolvedReference names where the image was found, pinned, or zero for a
+	// local layout or archive. For a registry it is Reference without its tag
+	// and with the digest of Descriptor; for a layout served over HTTP it is
+	// the URL the origin redirected to, or zero if it served the tag directly.
+	// The digest in that URL is only the origin's address for the tarball.
 	ResolvedReference reference.Reference
 	// Location is where Load reads from: the pinned location of a remote, or
 	// the local layout or archive as given, which Resolve leaves alone.
 	Location Location
 
-	// Descriptor is the content Location was pinned to, which Load reads
-	// instead of whatever Location names by then. For a registry, layout or
-	// archive it is the root index or manifest; for a layout served over HTTP
-	// it is the tarball as served, with only its media type and digest. It is
-	// zero if nothing was pinned: Resolve leaves it zero for a local layout or
-	// archive, and Save always sets it.
+	// Descriptor is the root index or manifest the image is loaded from: what
+	// a registry or layout tag names, or a tarball's own index.json. Once set,
+	// Load reads it instead of whatever Location names by then, and fails if
+	// Location no longer has it. Resolve sets it only for a registry, which
+	// answers with it; Load and Save always set it.
 	Descriptor ocispec.Descriptor
 }

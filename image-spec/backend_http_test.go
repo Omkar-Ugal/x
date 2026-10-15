@@ -22,10 +22,12 @@ import (
 	"unikraft.com/x/image-spec/schemes"
 )
 
-func serveTestTarball(t *testing.T) (*httptest.Server, digest.Digest) {
+// serveTestTarball serves a layout tarball, addressed by the digest of its
+// bytes, and also returns its root.
+func serveTestTarball(t *testing.T) (*httptest.Server, digest.Digest, ocispec.Descriptor) {
 	t.Helper()
 	tarPath := filepath.Join(t.TempDir(), "image.tar")
-	_, err := SaveTarball(t.Context(), tarPath, testImage)
+	root, err := SaveTarball(t.Context(), tarPath, testImage)
 	require.NoError(t, err)
 	data, err := os.ReadFile(tarPath)
 	require.NoError(t, err)
@@ -77,11 +79,11 @@ func serveTestTarball(t *testing.T) (*httptest.Server, digest.Digest) {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return srv, dgst
+	return srv, dgst, root
 }
 
 func TestHTTPAccessor(t *testing.T) {
-	srv, dgst := serveTestTarball(t)
+	srv, dgst, root := serveTestTarball(t)
 	host := srv.Listener.Addr().String()
 
 	tests := []struct {
@@ -141,53 +143,52 @@ func TestHTTPAccessor(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tt.wantLocation, res.Location.Path)
 			require.Equal(t, tt.wantPinned, res.ResolvedReference.Digest() != "")
-			if tt.wantPinned {
-				require.Equal(t, ocispec.Descriptor{MediaType: MediaTypeOCILayoutTar, Digest: dgst}, res.Descriptor)
-			} else {
-				require.Zero(t, res.Descriptor)
-			}
+			require.Zero(t, res.Descriptor, "only the download knows the root")
 
 			img, err := accessor.Load(ctx, res, platforms.All)
 			require.NoError(t, err)
-			require.Equal(t, res, img.Resolved)
 			require.NoError(t, img.Close())
+			require.Equal(t, root, img.Descriptor)
+
+			again, err := accessor.Load(ctx, img.Resolved, platforms.All)
+			require.NoError(t, err)
+			require.Equal(t, img.Resolved, again.Resolved)
+			require.NoError(t, again.Close())
 		})
 	}
 }
 
-func TestLoadTarballRemoteDigestMismatch(t *testing.T) {
-	srv, _ := serveTestTarball(t)
+func TestHTTPAccessorIgnoresURLDigest(t *testing.T) {
+	srv, _, root := serveTestTarball(t)
 	loc, err := ParseLocation("http+oci://" + srv.Listener.Addr().String() + "/ns/bad/@" + digest.FromString("other").String())
 	require.NoError(t, err)
 
 	accessor := NewAccessor(WithRegistryHeaders(http.Header{"X-Test": {"yes"}}))
 	res, err := accessor.Resolve(t.Context(), loc)
 	require.NoError(t, err)
-	_, err = accessor.Load(t.Context(), res, platforms.All)
-	require.ErrorContains(t, err, "does not match")
+	img, err := accessor.Load(t.Context(), res, platforms.All)
+	require.NoError(t, err)
+	require.Equal(t, root, img.Descriptor)
+	require.NoError(t, img.Close())
 }
 
 func TestHTTPAccessorLoadPinned(t *testing.T) {
-	srv, dgst := serveTestTarball(t)
-	host := srv.Listener.Addr().String()
+	srv, _, root := serveTestTarball(t)
 	accessor := NewAccessor(WithRegistryHeaders(http.Header{"X-Test": {"yes"}}))
+	direct := Location{Scheme: schemes.HTTPOCI, Path: srv.Listener.Addr().String() + "/ns/direct/latest"}
 
-	direct := Location{Scheme: schemes.HTTPOCI, Path: host + "/ns/direct/latest"}
-	img, err := accessor.Load(t.Context(), Resolved{Location: direct, Descriptor: tarballDescriptor(dgst)}, platforms.All)
+	img, err := accessor.Load(t.Context(), Resolved{Location: direct, Descriptor: root}, platforms.All)
 	require.NoError(t, err)
+	require.Equal(t, root, img.Descriptor)
 	require.NoError(t, img.Close())
 
-	other := tarballDescriptor(digest.FromString("other"))
+	other := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageIndex, Digest: digest.FromString("other")}
 	_, err = accessor.Load(t.Context(), Resolved{Location: direct, Descriptor: other}, platforms.All)
-	require.ErrorContains(t, err, "does not match")
-
-	pinned := Location{Scheme: schemes.HTTPOCI, Path: host + "/ns/img/@" + dgst.String()}
-	_, err = accessor.Load(t.Context(), Resolved{Location: pinned, Descriptor: other}, platforms.All)
-	require.ErrorContains(t, err, "pinned to")
+	require.ErrorContains(t, err, "tarball does not contain")
 }
 
 func TestHTTPAccessorResolveRefused(t *testing.T) {
-	srv, dgst := serveTestTarball(t)
+	srv, dgst, _ := serveTestTarball(t)
 	host := srv.Listener.Addr().String()
 
 	tests := []struct {

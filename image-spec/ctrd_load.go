@@ -26,7 +26,7 @@ func LoadContent(ctx context.Context, store content.Provider, desc ocispec.Descr
 	if err != nil {
 		return nil, fmt.Errorf("failed to get image manifest: %w", err)
 	}
-	return loadCtrdImageMfst(ctx, store, mfsts[0])
+	return loadCtrdImageMfst(ctx, store, desc, mfsts[0])
 }
 
 func LoadAllContent(ctx context.Context, store content.Provider, desc ocispec.Descriptor, platform platforms.MatchComparer) ([]*Image, error) {
@@ -40,7 +40,7 @@ func LoadAllContent(ctx context.Context, store content.Provider, desc ocispec.De
 	eg, ctx := errgroup.WithContext(ctx)
 	for i, mfst := range mfsts {
 		eg.Go(func() error {
-			img, err := loadCtrdImageMfst(ctx, store, mfst)
+			img, err := loadCtrdImageMfst(ctx, store, desc, mfst)
 			if err != nil {
 				return fmt.Errorf("failed to load image manifest: %w", err)
 			}
@@ -55,12 +55,15 @@ func LoadAllContent(ctx context.Context, store content.Provider, desc ocispec.De
 	return imgs, nil
 }
 
-func loadCtrdImageMfst(ctx context.Context, store content.Provider, desc ocispec.Descriptor) (*Image, error) {
+// loadCtrdImageMfst loads the image whose manifest is desc, recording root as
+// what it was loaded from.
+func loadCtrdImageMfst(ctx context.Context, store content.Provider, root ocispec.Descriptor, desc ocispec.Descriptor) (*Image, error) {
 	mfst, err := readManifest(ctx, store, desc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read image manifest: %w", err)
 	}
 	img := &Image{
+		Resolved:           Resolved{Descriptor: root},
 		ManifestDescriptor: desc,
 		Annotations:        mfst.Annotations,
 	}

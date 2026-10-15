@@ -8,16 +8,19 @@
 package imagespec
 
 import (
+	"archive/tar"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path"
 
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/images/archive"
 	"github.com/containerd/containerd/v2/plugins/content/local"
 	"github.com/containerd/platforms"
+	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -28,7 +31,7 @@ import (
 // format for building images before pushing them.
 
 // LoadTarball loads an image from a tarball (OCI or Docker format), from desc
-// if it is set, or else from the tarball's own index.
+// if it is set, or else from the tarball's own index.json.
 func LoadTarball(ctx context.Context, tarballPath string, desc ocispec.Descriptor, platform platforms.MatchComparer) (*Image, error) {
 	f, err := os.Open(tarballPath)
 	if err != nil {
@@ -40,7 +43,7 @@ func LoadTarball(ctx context.Context, tarballPath string, desc ocispec.Descripto
 }
 
 // LoadAllTarballs loads all images from a tarball (OCI or Docker format), from
-// desc if it is set, or else from the tarball's own index.
+// desc if it is set, or else from the tarball's own index.json.
 func LoadAllTarballs(ctx context.Context, tarballPath string, desc ocispec.Descriptor, platform platforms.MatchComparer) ([]*Image, error) {
 	f, err := os.Open(tarballPath)
 	if err != nil {
@@ -52,7 +55,7 @@ func LoadAllTarballs(ctx context.Context, tarballPath string, desc ocispec.Descr
 }
 
 // LoadTarballReader loads an image from a tarball reader (OCI or Docker
-// format), from desc if it is set, or else from the tarball's own index.
+// format), from desc if it is set, or else from the tarball's own index.json.
 func LoadTarballReader(ctx context.Context, r io.Reader, desc ocispec.Descriptor, platform platforms.MatchComparer) (*Image, error) {
 	store, root, cleanup, err := importTarball(ctx, r, desc)
 	if err != nil {
@@ -68,7 +71,7 @@ func LoadTarballReader(ctx context.Context, r io.Reader, desc ocispec.Descriptor
 }
 
 // LoadAllTarballReaders loads all images from a tarball reader (OCI or Docker
-// format), from desc if it is set, or else from the tarball's own index.
+// format), from desc if it is set, or else from the tarball's own index.json.
 func LoadAllTarballReaders(ctx context.Context, r io.Reader, desc ocispec.Descriptor, platform platforms.MatchComparer) ([]*Image, error) {
 	store, root, cleanup, err := importTarball(ctx, r, desc)
 	if err != nil {
@@ -87,7 +90,7 @@ func LoadAllTarballReaders(ctx context.Context, r io.Reader, desc ocispec.Descri
 
 // importTarball imports the tarball r into a temporary store, which cleanup
 // removes, and returns the root to load from: desc if it is set, or else the
-// tarball's own index.
+// tarball's own index.json.
 func importTarball(ctx context.Context, r io.Reader, desc ocispec.Descriptor) (_ content.Store, _ ocispec.Descriptor, _ func() error, rerr error) {
 	tmpDir, err := os.MkdirTemp("", "imagespec-tarball-*")
 	if err != nil {
@@ -131,8 +134,9 @@ func SaveTarball(ctx context.Context, tarballPath string, image ...*Image) (ocis
 	return SaveTarballWriter(ctx, f, image...)
 }
 
-// SaveTarballWriter saves an image to a tarball writer, and returns the
-// descriptor of the index that lists the images in the tarball.
+// SaveTarballWriter saves an image to a tarball writer under one index, and
+// returns the descriptor of the tarball's own index.json, which lists that
+// index: it is what loading the tarball reads from.
 func SaveTarballWriter(ctx context.Context, w io.Writer, image ...*Image) (ocispec.Descriptor, error) {
 	tmpDir, err := os.MkdirTemp("", "imagespec-tarball-*")
 	if err != nil {
@@ -156,10 +160,48 @@ func SaveTarballWriter(ctx context.Context, w io.Writer, image ...*Image) (ocisp
 		return ocispec.Descriptor{}, fmt.Errorf("local store does not implement content.InfoReaderProvider")
 	}
 
-	err = archive.Export(ctx, infoStore, w, archive.WithManifest(desc))
+	pr, pw := io.Pipe()
+	index := make(chan ocispec.Descriptor, 1)
+	go func() {
+		desc, err := tarIndex(pr)
+		_ = pr.CloseWithError(err)
+		index <- desc
+	}()
+	err = archive.Export(ctx, infoStore, io.MultiWriter(w, pw), archive.WithManifest(desc))
+	_ = pw.CloseWithError(err)
+	root := <-index
 	if err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to export tarball: %w", err)
 	}
+	if root.Digest == "" {
+		return ocispec.Descriptor{}, fmt.Errorf("exported tarball has no %s", ocispec.ImageIndexFile)
+	}
+	return root, nil
+}
 
-	return desc, nil
+// tarIndex reads the tarball r to its end, and describes its index.json as
+// archive.ImportIndex does.
+func tarIndex(r io.Reader) (ocispec.Descriptor, error) {
+	var desc ocispec.Descriptor
+	tr := tar.NewReader(r)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return ocispec.Descriptor{}, err
+		}
+		if path.Clean(hdr.Name) != ocispec.ImageIndexFile {
+			continue
+		}
+		digester := digest.Canonical.Digester()
+		size, err := io.Copy(digester.Hash(), tr)
+		if err != nil {
+			return ocispec.Descriptor{}, err
+		}
+		desc = ocispec.Descriptor{MediaType: ocispec.MediaTypeImageIndex, Digest: digester.Digest(), Size: size}
+	}
+	_, err := io.Copy(io.Discard, r)
+	return desc, err
 }

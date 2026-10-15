@@ -6,10 +6,14 @@
 package imagespec
 
 import (
+	"archive/tar"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/containerd/platforms"
+	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -112,5 +116,38 @@ func TestLoadUnpinned(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, qemuIntel, img.Image.Platform, "an unpinned layout follows its tag")
 		require.NoError(t, img.Close())
+
+		path, _ := splitPathTag(dest.Path)
+		data, err := os.ReadFile(filepath.Join(path, ocispec.ImageIndexFile))
+		require.NoError(t, err)
+		var index ocispec.Index
+		require.NoError(t, json.Unmarshal(data, &index))
+		require.Len(t, index.Manifests, 1)
+		assert.Equal(t, index.Manifests[0].Digest, img.Descriptor.Digest, "an unpinned layout is pinned to what its tag names")
+	})
+
+	t.Run("archive", func(t *testing.T) {
+		dest := Location{Scheme: schemes.OCIArchive, Path: filepath.Join(t.TempDir(), "app.tar")}
+		saved, err := accessor.Save(ctx, &dest, platformImages(fcIntel)...)
+		require.NoError(t, err)
+
+		img, err := accessor.Load(ctx, Resolved{Location: dest}, platforms.All)
+		require.NoError(t, err)
+		require.NoError(t, img.Close())
+		assert.Equal(t, saved, img.Resolved)
+
+		f, err := os.Open(dest.Path)
+		require.NoError(t, err)
+		defer f.Close()
+		_, r, err := readTarFile(tar.NewReader(f), "index.json")
+		require.NoError(t, err)
+		index, err := digest.FromReader(r)
+		require.NoError(t, err)
+		assert.Equal(t, index, img.Descriptor.Digest, "an unpinned archive is pinned to its own index")
+
+		again, err := accessor.Load(ctx, img.Resolved, platforms.All)
+		require.NoError(t, err)
+		assert.Equal(t, img.Resolved, again.Resolved)
+		require.NoError(t, again.Close())
 	})
 }
