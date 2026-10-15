@@ -5,7 +5,7 @@
 
 package buildkit
 
-// Environment variables that official/utils/buildkitd reads.
+// Environment variables that official/utils/buildkit reads.
 const (
 	// EnvTLSCA is the CA that client certificates must chain to.
 	EnvTLSCA = "BUILDKIT_TLS_CA_PEM"

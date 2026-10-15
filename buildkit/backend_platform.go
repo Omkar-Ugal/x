@@ -23,7 +23,7 @@ import (
 
 // DefaultImage is the image new builders run, callers should pin theirs with
 // WithImage.
-const DefaultImage = "official/utils/buildkitd:latest"
+const DefaultImage = "official/utils/buildkit:latest"
 
 const (
 	port     = 1234
@@ -62,7 +62,7 @@ func WithMemory(mb int64) Option {
 }
 
 // WithCacheSize sets the size of new builders' cache volume in MiB, 20480 by
-// default.
+// default. The build cache is kept to half of it, see gcKeepStorage.
 func WithCacheSize(mb uint64) Option {
 	return func(p *Platform) { p.cacheMB = mb }
 }
@@ -190,6 +190,7 @@ func (p *Platform) create(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("generating certificates: %w", err)
 	}
+	env[EnvOCIWorkerGCKeepStorage] = gcKeepStorage(p.cacheMB)
 	_, err = p.c.CreateInstance(ctx, platform.CreateInstanceRequest{
 		Name:      &name,
 		Image:     platform.ImageReference(p.image),
@@ -214,6 +215,14 @@ func (p *Platform) create(ctx context.Context, name string) error {
 		return fmt.Errorf("creating builder %s: %w", name, err)
 	}
 	return nil
+}
+
+// gcKeepStorage returns the garbage collection limits for a cache volume of
+// the given size in MiB, in the "reserved,free,max" MB form of
+// EnvOCIWorkerGCKeepStorage.
+func gcKeepStorage(cacheMiB uint64) string {
+	mb := cacheMiB * (1 << 20) / 1_000_000
+	return fmt.Sprintf("%d,%d,%d", mb/10, mb/2, mb/2)
 }
 
 // dial connects to buildkitd at addr with buildkit's mTLS inside the TLS that
