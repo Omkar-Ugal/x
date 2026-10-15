@@ -116,7 +116,7 @@ func registryProvider(ctx context.Context, named distref.Named, desc ocispec.Des
 func registryResolved(named distref.Named, desc ocispec.Descriptor) Resolved {
 	res := Resolved{
 		Location:   Location{Scheme: schemes.OCI, Path: named.String()},
-		descriptor: desc,
+		Descriptor: desc,
 	}
 	if ref, err := reference.FromNamed(named); err == nil {
 		res.Reference = ref

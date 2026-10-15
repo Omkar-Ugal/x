@@ -16,7 +16,10 @@ import (
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zlib"
 	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/require"
+
+	"unikraft.com/x/image-spec/schemes"
 )
 
 func serveTestTarball(t *testing.T) (*httptest.Server, digest.Digest) {
@@ -138,9 +141,15 @@ func TestHTTPAccessor(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tt.wantLocation, res.Location.Path)
 			require.Equal(t, tt.wantPinned, res.ResolvedReference.Digest() != "")
+			if tt.wantPinned {
+				require.Equal(t, ocispec.Descriptor{MediaType: MediaTypeOCILayoutTar, Digest: dgst}, res.Descriptor)
+			} else {
+				require.Zero(t, res.Descriptor)
+			}
 
 			img, err := accessor.Load(ctx, res, platforms.All)
 			require.NoError(t, err)
+			require.Equal(t, res, img.Resolved)
 			require.NoError(t, img.Close())
 		})
 	}
@@ -156,6 +165,25 @@ func TestLoadTarballRemoteDigestMismatch(t *testing.T) {
 	require.NoError(t, err)
 	_, err = accessor.Load(t.Context(), res, platforms.All)
 	require.ErrorContains(t, err, "does not match")
+}
+
+func TestHTTPAccessorLoadPinned(t *testing.T) {
+	srv, dgst := serveTestTarball(t)
+	host := srv.Listener.Addr().String()
+	accessor := NewAccessor(WithRegistryHeaders(http.Header{"X-Test": {"yes"}}))
+
+	direct := Location{Scheme: schemes.HTTPOCI, Path: host + "/ns/direct/latest"}
+	img, err := accessor.Load(t.Context(), Resolved{Location: direct, Descriptor: tarballDescriptor(dgst)}, platforms.All)
+	require.NoError(t, err)
+	require.NoError(t, img.Close())
+
+	other := tarballDescriptor(digest.FromString("other"))
+	_, err = accessor.Load(t.Context(), Resolved{Location: direct, Descriptor: other}, platforms.All)
+	require.ErrorContains(t, err, "does not match")
+
+	pinned := Location{Scheme: schemes.HTTPOCI, Path: host + "/ns/img/@" + dgst.String()}
+	_, err = accessor.Load(t.Context(), Resolved{Location: pinned, Descriptor: other}, platforms.All)
+	require.ErrorContains(t, err, "pinned to")
 }
 
 func TestHTTPAccessorResolveRefused(t *testing.T) {

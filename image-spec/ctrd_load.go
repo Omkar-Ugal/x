@@ -22,15 +22,15 @@ import (
 )
 
 func LoadContent(ctx context.Context, store content.Provider, desc ocispec.Descriptor, platform platforms.MatchComparer) (*Image, error) {
-	mfsts, err := Manifests(ctx, store, desc, ignoringOSFeatures(platform))
+	mfsts, err := ManifestDescriptors(ctx, store, desc, ignoringOSFeatures(platform))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get image manifest: %w", err)
 	}
-	return loadCtrdImageMfst(ctx, store, desc, mfsts[0])
+	return loadCtrdImageMfst(ctx, store, mfsts[0])
 }
 
 func LoadAllContent(ctx context.Context, store content.Provider, desc ocispec.Descriptor, platform platforms.MatchComparer) ([]*Image, error) {
-	mfsts, err := Manifests(ctx, store, desc, ignoringOSFeatures(platform))
+	mfsts, err := ManifestDescriptors(ctx, store, desc, ignoringOSFeatures(platform))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get image manifest: %w", err)
 	}
@@ -40,7 +40,7 @@ func LoadAllContent(ctx context.Context, store content.Provider, desc ocispec.De
 	eg, ctx := errgroup.WithContext(ctx)
 	for i, mfst := range mfsts {
 		eg.Go(func() error {
-			img, err := loadCtrdImageMfst(ctx, store, desc, mfst)
+			img, err := loadCtrdImageMfst(ctx, store, mfst)
 			if err != nil {
 				return fmt.Errorf("failed to load image manifest: %w", err)
 			}
@@ -55,12 +55,15 @@ func LoadAllContent(ctx context.Context, store content.Provider, desc ocispec.De
 	return imgs, nil
 }
 
-func loadCtrdImageMfst(ctx context.Context, store content.Provider, desc ocispec.Descriptor, mfst ocispec.Manifest) (*Image, error) {
-	// TODO: store the descriptor of the manifest in img.desc
+func loadCtrdImageMfst(ctx context.Context, store content.Provider, desc ocispec.Descriptor) (*Image, error) {
+	mfst, err := readManifest(ctx, store, desc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read image manifest: %w", err)
+	}
 	img := &Image{
-		Provider:    store,
-		Descriptor:  desc,
-		Annotations: mfst.Annotations,
+		Provider:           store,
+		ManifestDescriptor: desc,
+		Annotations:        mfst.Annotations,
 	}
 
 	dt, err := content.ReadBlob(ctx, store, mfst.Config)

@@ -21,8 +21,9 @@ type Image struct {
 	// Resolved is where the image was loaded from (if available).
 	Resolved
 
-	// Descriptor is the OCI descriptor of the image manifest (if available).
-	Descriptor ocispec.Descriptor
+	// ManifestDescriptor is the OCI descriptor of the image manifest (if
+	// available).
+	ManifestDescriptor ocispec.Descriptor
 	// Provider is the content provider for the image (if available).
 	Provider content.Provider
 

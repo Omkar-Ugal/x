@@ -22,6 +22,7 @@ import (
 	"github.com/klauspost/compress/zlib"
 	"github.com/klauspost/compress/zstd"
 	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"unikraft.com/x/image-spec/reference"
 	"unikraft.com/x/image-spec/schemes"
@@ -115,17 +116,17 @@ func checkLayoutContentType(rsp *http.Response) error {
 	return nil
 }
 
-// LoadTarballRemote loads the layout tarball at u. If the final path segment
-// of u names a digest, it is the digest of the bytes as served, before any
-// content encoding is undone, and the load fails if they do not match.
-func LoadTarballRemote(ctx context.Context, u *url.URL, client *http.Client, header http.Header, platform platforms.MatchComparer) (*Image, error) {
-	body, err := openTarballRemote(ctx, u, client, header)
+// LoadTarballRemote loads the layout tarball at u, checking the bytes as
+// served, before any content encoding is undone, against dgst - or, if dgst
+// is empty, against the digest the final path segment of u names, if any.
+func LoadTarballRemote(ctx context.Context, u *url.URL, dgst digest.Digest, client *http.Client, header http.Header, platform platforms.MatchComparer) (*Image, error) {
+	body, err := openTarballRemote(ctx, u, dgst, client, header)
 	if err != nil {
 		return nil, err
 	}
 	defer body.Close()
 
-	img, err := LoadTarballReader(ctx, body, platform)
+	img, err := LoadTarballReader(ctx, body, ocispec.Descriptor{}, platform)
 	if err != nil {
 		return nil, err
 	}
@@ -138,14 +139,14 @@ func LoadTarballRemote(ctx context.Context, u *url.URL, client *http.Client, hea
 
 // LoadAllTarballsRemote loads all images from the layout tarball at u,
 // checking the bytes as LoadTarballRemote does.
-func LoadAllTarballsRemote(ctx context.Context, u *url.URL, client *http.Client, header http.Header, platform platforms.MatchComparer) ([]*Image, error) {
-	body, err := openTarballRemote(ctx, u, client, header)
+func LoadAllTarballsRemote(ctx context.Context, u *url.URL, dgst digest.Digest, client *http.Client, header http.Header, platform platforms.MatchComparer) ([]*Image, error) {
+	body, err := openTarballRemote(ctx, u, dgst, client, header)
 	if err != nil {
 		return nil, err
 	}
 	defer body.Close()
 
-	imgs, err := LoadAllTarballReaders(ctx, body, platform)
+	imgs, err := LoadAllTarballReaders(ctx, body, ocispec.Descriptor{}, platform)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +186,14 @@ func tarballResolved(u *url.URL) Resolved {
 			res.ResolvedReference = ref
 		}
 	}
+	if dgst, err := tarballDigest(u); err == nil {
+		res.Descriptor = tarballDescriptor(dgst)
+	}
 	return res
+}
+
+func tarballDescriptor(dgst digest.Digest) ocispec.Descriptor {
+	return ocispec.Descriptor{MediaType: MediaTypeOCILayoutTar, Digest: dgst}
 }
 
 // remoteTarball is the body of a tarball response: the decoded bytes to read,
@@ -212,8 +220,14 @@ func (t *remoteTarball) verify() error {
 	return nil
 }
 
-func openTarballRemote(ctx context.Context, u *url.URL, client *http.Client, header http.Header) (*remoteTarball, error) {
-	dgst, _ := tarballDigest(u)
+func openTarballRemote(ctx context.Context, u *url.URL, dgst digest.Digest, client *http.Client, header http.Header) (*remoteTarball, error) {
+	if named, err := tarballDigest(u); err == nil {
+		if dgst == "" {
+			dgst = named
+		} else if dgst != named {
+			return nil, fmt.Errorf("fetching %q: pinned to %s, but it names %s", u, dgst, named)
+		}
+	}
 
 	rsp, err := requestTarball(ctx, client, http.MethodGet, u, header)
 	if err != nil {

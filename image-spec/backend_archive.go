@@ -9,6 +9,7 @@ package imagespec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,66 +27,71 @@ import (
 // This is convenient for moving images around, as well as an intermediate
 // format for building images before pushing them.
 
-// LoadTarball loads an image from a tarball (OCI or Docker format).
-func LoadTarball(ctx context.Context, tarballPath string, platform platforms.MatchComparer) (*Image, error) {
+// LoadTarball loads an image from a tarball (OCI or Docker format), from desc
+// if it is set, or else from the tarball's own index.
+func LoadTarball(ctx context.Context, tarballPath string, desc ocispec.Descriptor, platform platforms.MatchComparer) (*Image, error) {
 	f, err := os.Open(tarballPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open tarball: %w", err)
 	}
 	defer f.Close()
 
-	return LoadTarballReader(ctx, f, platform)
+	return LoadTarballReader(ctx, f, desc, platform)
 }
 
-// LoadAllTarballs loads all images from a tarball (OCI or Docker format).
-func LoadAllTarballs(ctx context.Context, tarballPath string, platform platforms.MatchComparer) ([]*Image, error) {
+// LoadAllTarballs loads all images from a tarball (OCI or Docker format), from
+// desc if it is set, or else from the tarball's own index.
+func LoadAllTarballs(ctx context.Context, tarballPath string, desc ocispec.Descriptor, platform platforms.MatchComparer) ([]*Image, error) {
 	f, err := os.Open(tarballPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open tarball: %w", err)
 	}
 	defer f.Close()
 
-	return LoadAllTarballReaders(ctx, f, platform)
+	return LoadAllTarballReaders(ctx, f, desc, platform)
 }
 
-// LoadTarballReader loads an image from a tarball reader (OCI or Docker format).
-func LoadTarballReader(ctx context.Context, r io.Reader, platform platforms.MatchComparer) (_ *Image, rerr error) {
-	tmpDir, err := os.MkdirTemp("", "imagespec-tarball-*")
+// LoadTarballReader loads an image from a tarball reader (OCI or Docker
+// format), from desc if it is set, or else from the tarball's own index.
+func LoadTarballReader(ctx context.Context, r io.Reader, desc ocispec.Descriptor, platform platforms.MatchComparer) (*Image, error) {
+	store, root, cleanup, err := importTarball(ctx, r, desc)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temp directory: %w", err)
-	}
-	cleanup := func() error {
-		return os.RemoveAll(tmpDir)
-	}
-	defer func() {
-		if rerr != nil {
-			_ = cleanup()
-		}
-	}()
-
-	store, err := local.NewStore(tmpDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create local store: %w", err)
+		return nil, err
 	}
 
-	idxDesc, err := archive.ImportIndex(ctx, store, r)
+	img, err := LoadContent(ctx, store, root, platform)
 	if err != nil {
-		return nil, fmt.Errorf("failed to import tarball: %w", err)
-	}
-
-	img, err := LoadContent(ctx, store, idxDesc, platform)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load image from imported tarball: %w", err)
+		return nil, errors.Join(fmt.Errorf("failed to load image from imported tarball: %w", err), cleanup())
 	}
 	img.cleanup = append(img.cleanup, cleanup)
 	return img, nil
 }
 
-// LoadAllTarballReaders loads all images from a tarball reader (OCI or Docker format).
-func LoadAllTarballReaders(ctx context.Context, r io.Reader, platform platforms.MatchComparer) (_ []*Image, rerr error) {
+// LoadAllTarballReaders loads all images from a tarball reader (OCI or Docker
+// format), from desc if it is set, or else from the tarball's own index.
+func LoadAllTarballReaders(ctx context.Context, r io.Reader, desc ocispec.Descriptor, platform platforms.MatchComparer) ([]*Image, error) {
+	store, root, cleanup, err := importTarball(ctx, r, desc)
+	if err != nil {
+		return nil, err
+	}
+
+	imgs, err := LoadAllContent(ctx, store, root, platform)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("failed to load images from imported tarball: %w", err), cleanup())
+	}
+	for _, img := range imgs {
+		img.cleanup = append(img.cleanup, cleanup)
+	}
+	return imgs, nil
+}
+
+// importTarball imports the tarball r into a temporary store, which cleanup
+// removes, and returns the root to load from: desc if it is set, or else the
+// tarball's own index.
+func importTarball(ctx context.Context, r io.Reader, desc ocispec.Descriptor) (_ content.Store, _ ocispec.Descriptor, _ func() error, rerr error) {
 	tmpDir, err := os.MkdirTemp("", "imagespec-tarball-*")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temp directory: %w", err)
+		return nil, ocispec.Descriptor{}, nil, fmt.Errorf("failed to create temp directory: %w", err)
 	}
 	cleanup := func() error {
 		return os.RemoveAll(tmpDir)
@@ -98,22 +104,20 @@ func LoadAllTarballReaders(ctx context.Context, r io.Reader, platform platforms.
 
 	store, err := local.NewStore(tmpDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create local store: %w", err)
+		return nil, ocispec.Descriptor{}, nil, fmt.Errorf("failed to create local store: %w", err)
 	}
 
-	idxDesc, err := archive.ImportIndex(ctx, store, r)
+	root, err := archive.ImportIndex(ctx, store, r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to import tarball: %w", err)
+		return nil, ocispec.Descriptor{}, nil, fmt.Errorf("failed to import tarball: %w", err)
 	}
-
-	imgs, err := LoadAllContent(ctx, store, idxDesc, platform)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load images from imported tarball: %w", err)
+	if desc.Digest != "" {
+		if _, err := store.Info(ctx, desc.Digest); err != nil {
+			return nil, ocispec.Descriptor{}, nil, fmt.Errorf("tarball does not contain %s: %w", desc.Digest, err)
+		}
+		root = desc
 	}
-	for _, img := range imgs {
-		img.cleanup = append(img.cleanup, cleanup)
-	}
-	return imgs, nil
+	return store, root, cleanup, nil
 }
 
 // SaveTarball saves an image to a tarball file.

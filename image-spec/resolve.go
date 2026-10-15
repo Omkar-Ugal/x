@@ -27,8 +27,11 @@ type Resolved struct {
 	// the local layout or archive as given, which Resolve leaves alone.
 	Location Location
 
-	// descriptor is what the registry answered Resolve with, kept so that Load
-	// does not ask again. No other scheme sets it, since their root descriptor
-	// is only known once the content is read.
-	descriptor ocispec.Descriptor
+	// Descriptor is the content Location was pinned to, which Load reads
+	// instead of whatever Location names by then. For a registry, layout or
+	// archive it is the root index or manifest; for a layout served over HTTP
+	// it is the tarball as served, with only its media type and digest. It is
+	// zero if nothing was pinned: Resolve leaves it zero for a local layout or
+	// archive, and Save always sets it.
+	Descriptor ocispec.Descriptor
 }

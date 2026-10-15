@@ -71,14 +71,14 @@ func (c *InspectCmd) Run(ctx context.Context) (rerr error) {
 			fmt.Fprintln(w, "\n"+strings.Repeat("-", 80)+"\n")
 		}
 
-		displayName := name(img.Reference, img.Descriptor)
+		displayName := name(img.Reference, img.ManifestDescriptor)
 		if displayName == "" {
 			displayName = c.Image
 		}
 		fmt.Fprintf(w, "Name: %s\n", displayName)
 		mediaType := ""
-		if img.Descriptor.MediaType != "" {
-			mediaType = img.Descriptor.MediaType
+		if img.ManifestDescriptor.MediaType != "" {
+			mediaType = img.ManifestDescriptor.MediaType
 		}
 		fmt.Fprintf(w, "MediaType: %s\n", mediaType)
 		fmt.Println()
