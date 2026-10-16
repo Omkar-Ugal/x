@@ -8,9 +8,11 @@ package registryauth_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/moby/buildkit/session"
@@ -62,14 +64,14 @@ func TestFromTokenMalformed(t *testing.T) {
 
 // daemon opens a session that serves creds to a session manager, as the
 // client does to buildkitd, and returns the manager and the session's group.
-func daemon(t *testing.T, creds registryauth.Credentials) (*session.Manager, session.Group) {
+func daemon(t *testing.T, creds registryauth.Credentials, opts ...registryauth.Option) (*session.Manager, session.Group) {
 	t.Helper()
 
 	sm, err := session.NewManager()
 	require.NoError(t, err)
 	s, err := session.NewSession(t.Context(), "")
 	require.NoError(t, err)
-	s.Allow(creds.Attachable())
+	s.Allow(creds.Attachable(opts...))
 	t.Cleanup(func() { _ = s.Close() })
 
 	dialer := testutil.TestStream(func(ctx context.Context, conn net.Conn, meta map[string][]string) error {
@@ -163,4 +165,35 @@ func TestAttachable(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("fetches the tokens through the client it is given", func(t *testing.T) {
+		var realm string
+		client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			realm = r.URL.String()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": {"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"access_token":"fr0m-cl1ent","expires_in":300}`)),
+				Request:    r,
+			}, nil
+		})}
+		sm, g := daemon(t, creds, registryauth.WithHTTPClient(client))
+
+		// Nothing answers at the realm: only the client given can produce a token.
+		resp, err := auth.FetchToken(ctx, &auth.FetchTokenRequest{
+			ClientID: "buildkit-client",
+			Host:     "index.unikraft.io",
+			Realm:    "http://realm.invalid/token",
+			Service:  "registry",
+			Scopes:   []string{"repository:acme/app:push"},
+		}, sm, g)
+		require.NoError(t, err)
+		assert.Equal(t, "fr0m-cl1ent", resp.Token)
+		assert.Equal(t, "http://realm.invalid/token", realm)
+	})
 }
+
+// roundTripperFunc is an http.RoundTripper made of a function.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
