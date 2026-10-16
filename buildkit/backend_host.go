@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/util/appdefaults"
@@ -17,12 +18,14 @@ import (
 	_ "github.com/moby/buildkit/client/connhelper/dockercontainer"
 	_ "github.com/moby/buildkit/client/connhelper/kubepod"
 	_ "github.com/moby/buildkit/client/connhelper/nerdctlcontainer"
+	_ "github.com/moby/buildkit/client/connhelper/npipe"
 	_ "github.com/moby/buildkit/client/connhelper/podmancontainer"
 	_ "github.com/moby/buildkit/client/connhelper/ssh"
 )
 
 // Host is the buildkitd at Addr, else at BUILDKIT_HOST, else on buildkit's
-// default socket, which is unavailable when nothing answers there.
+// default socket, which is unavailable when nothing answers there and on
+// Windows, where it is a native buildkitd that cannot build Linux images.
 type Host struct {
 	Addr string
 }
@@ -33,6 +36,9 @@ func (h Host) Acquire(ctx context.Context, _ Key) (*Daemon, error) {
 	explicit := addr != ""
 	if !explicit {
 		addr = appdefaults.Address
+		if runtime.GOOS == "windows" {
+			return nil, fmt.Errorf("%w at %s: a native windows buildkitd cannot build linux images", ErrUnavailable, addr)
+		}
 	}
 
 	c, err := client.New(ctx, addr)
