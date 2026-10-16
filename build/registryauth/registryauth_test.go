@@ -7,6 +7,7 @@ package registryauth_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,8 +16,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/docker/cli/cli/config/configfile"
+	"github.com/docker/cli/cli/config/types"
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/session/auth"
+	"github.com/moby/buildkit/session/auth/authprovider"
 	"github.com/moby/buildkit/session/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -62,16 +66,114 @@ func TestFromTokenMalformed(t *testing.T) {
 	}
 }
 
-// daemon opens a session that serves creds to a session manager, as the
-// client does to buildkitd, and returns the manager and the session's group.
-func daemon(t *testing.T, creds registryauth.Credentials, opts ...registryauth.Option) (*session.Manager, session.Group) {
+// dockerConfig is a docker config with a password for ghcr.io and Docker Hub,
+// and an identity token for quay.io.
+func dockerConfig() *configfile.ConfigFile {
+	cfg := configfile.New("")
+	cfg.AuthConfigs = map[string]types.AuthConfig{
+		"ghcr.io":                     {Username: "alice", Password: "s3cret"},
+		"https://index.docker.io/v1/": {Username: "bob", Password: "hunter2"},
+		"quay.io":                     {Username: "carol", IdentityToken: "1d-t0k3n"},
+	}
+	return cfg
+}
+
+func TestFromDockerConfig(t *testing.T) {
+	creds := registryauth.FromDockerConfig(dockerConfig())
+
+	for _, tc := range []struct {
+		name, host, user, secret string
+	}{
+		{"a registry gets its user and password", "ghcr.io", "alice", "s3cret"},
+		{"Docker Hub gets the entry of its config key", "registry-1.docker.io", "bob", "hunter2"},
+		{"an identity token is a secret without a user", "quay.io", "", "1d-t0k3n"},
+		{"another registry gets nothing", "index.unikraft.io", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			user, secret, err := creds(tc.host)
+			require.NoError(t, err)
+			assert.Equal(t, tc.user, user)
+			assert.Equal(t, tc.secret, secret)
+		})
+	}
+}
+
+// caller returns the caller of the session in g.
+func caller(t *testing.T, sm *session.Manager, g session.Group) session.Caller {
+	t.Helper()
+
+	var c session.Caller
+	require.NoError(t, sm.Any(t.Context(), g, func(_ context.Context, _ string, sc session.Caller) error {
+		c = sc
+		return nil
+	}))
+	return c
+}
+
+func TestFromSession(t *testing.T) {
+	t.Run("asks the auth attachable of the client", func(t *testing.T) {
+		sm, g := daemon(t, authprovider.NewDockerAuthProvider(authprovider.DockerAuthProviderConfig{
+			AuthConfigProvider: authprovider.LoadAuthConfig(dockerConfig()),
+		}))
+		user, secret, err := registryauth.FromSession(t.Context(), caller(t, sm, g))("ghcr.io")
+		require.NoError(t, err)
+		assert.Equal(t, "alice", user)
+		assert.Equal(t, "s3cret", secret)
+	})
+
+	t.Run("gives nothing for a client without auth", func(t *testing.T) {
+		sm, g := daemon(t)
+		user, secret, err := registryauth.FromSession(t.Context(), caller(t, sm, g))("ghcr.io")
+		require.NoError(t, err)
+		assert.Empty(t, user)
+		assert.Empty(t, secret)
+	})
+}
+
+func TestOr(t *testing.T) {
+	static := func(user, secret string) registryauth.Credentials {
+		return func(string) (string, string, error) { return user, secret, nil }
+	}
+	failing := registryauth.Credentials(func(string) (string, string, error) {
+		return "", "", errors.New("config is broken")
+	})
+
+	for _, tc := range []struct {
+		name          string
+		first, next   registryauth.Credentials
+		user, secret  string
+		expectFailure bool
+	}{
+		{"the first credentials win", static("alice", "s3cret"), failing, "alice", "s3cret", false},
+		{"a token without a user counts", static("", "t0k3n"), failing, "", "t0k3n", false},
+		{"none falls through to the next", static("", ""), static("bob", "hunter2"), "bob", "hunter2", false},
+		{"an error stops the lookup", failing, static("bob", "hunter2"), "", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			user, secret, err := tc.first.Or(tc.next)("ghcr.io")
+			if tc.expectFailure {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.user, user)
+			assert.Equal(t, tc.secret, secret)
+		})
+	}
+}
+
+// daemon opens a session that serves attachables to a session manager, as
+// the client does to buildkitd, and returns the manager and the session's group.
+func daemon(t *testing.T, attachables ...session.Attachable) (*session.Manager, session.Group) {
 	t.Helper()
 
 	sm, err := session.NewManager()
 	require.NoError(t, err)
 	s, err := session.NewSession(t.Context(), "")
 	require.NoError(t, err)
-	s.Allow(creds.Attachable(opts...))
+	for _, a := range attachables {
+		s.Allow(a)
+	}
 	t.Cleanup(func() { _ = s.Close() })
 
 	dialer := testutil.TestStream(func(ctx context.Context, conn net.Conn, meta map[string][]string) error {
@@ -119,7 +221,7 @@ func startRealm(t *testing.T, oauth bool) string {
 func TestAttachable(t *testing.T) {
 	creds, err := registryauth.FromToken(token)
 	require.NoError(t, err)
-	sm, g := daemon(t, creds)
+	sm, g := daemon(t, creds.Attachable())
 	ctx := t.Context()
 
 	t.Run("shares the credentials of the registry", func(t *testing.T) {
@@ -177,7 +279,7 @@ func TestAttachable(t *testing.T) {
 				Request:    r,
 			}, nil
 		})}
-		sm, g := daemon(t, creds, registryauth.WithHTTPClient(client))
+		sm, g := daemon(t, creds.Attachable(registryauth.WithHTTPClient(client)))
 
 		// Nothing answers at the realm: only the client given can produce a token.
 		resp, err := auth.FetchToken(ctx, &auth.FetchTokenRequest{
