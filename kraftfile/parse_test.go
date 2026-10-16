@@ -295,7 +295,7 @@ rootfs:
 
 func TestParseComponentsAndLibraries(t *testing.T) {
 	input := `spec: v0.7
-unikraft: stable
+unikraft: https://github.com/unikraft/unikraft.git
 template:
   source: https://github.com/unikraft/app-elfloader.git
   version: staging
@@ -310,8 +310,9 @@ libraries:
 	doc, err := ParseBytes([]byte(input))
 	require.NoError(t, err)
 	require.NotNil(t, doc.Unikraft)
-	require.Empty(t, doc.Unikraft.Source)
-	require.Equal(t, "stable", doc.Unikraft.Version)
+	require.Equal(t, "https://github.com/unikraft/unikraft.git", doc.Unikraft.Source)
+	require.Empty(t, doc.Unikraft.Version)
+	require.Empty(t, doc.Unikraft.Type)
 	require.NotNil(t, doc.Template)
 	require.Equal(t, "https://github.com/unikraft/app-elfloader.git", doc.Template.Source)
 	require.Equal(t, "staging", doc.Template.Version)
@@ -321,6 +322,75 @@ libraries:
 	value, ok := doc.Libraries["lwip"].KConfig.Lookup("CONFIG_LWIP_TCP")
 	require.True(t, ok)
 	require.Equal(t, "y", value)
+}
+
+func TestParseUnikraftKernelType(t *testing.T) {
+	input := `spec: v0.7
+targets:
+- kraftcloud/x86_64
+unikraft:
+  type: kernel
+  source: ./build/helloworld_kraftcloud-x86_64
+`
+	requireValidSchema(t, input)
+	doc, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+	require.NotNil(t, doc.Unikraft)
+	require.Equal(t, UnikraftTypeKernel, doc.Unikraft.Type)
+	require.Equal(t, "./build/helloworld_kraftcloud-x86_64", doc.Unikraft.Source)
+	require.Empty(t, doc.Unikraft.Version)
+}
+
+func TestParseUnikraftInvalidType(t *testing.T) {
+	input := `spec: v0.7
+unikraft:
+  type: bananas
+  source: ./kernel
+`
+	_, err := ParseBytes([]byte(input))
+	require.ErrorContains(t, err, `invalid unikraft type "bananas"`)
+}
+
+func TestParseKernelAliasString(t *testing.T) {
+	input := `spec: v0.7
+targets:
+- kraftcloud/x86_64
+kernel: ./build/helloworld_kraftcloud-x86_64
+`
+	requireValidSchema(t, input)
+	doc, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+	require.NotNil(t, doc.Unikraft)
+	require.Empty(t, doc.Unikraft.Type)
+	require.Equal(t, "./build/helloworld_kraftcloud-x86_64", doc.Unikraft.Source)
+}
+
+func TestParseKernelAliasMap(t *testing.T) {
+	input := `spec: v0.7
+kernel:
+  type: kernel
+  source: ./build/helloworld_kraftcloud-x86_64
+  kconfig:
+    CONFIG_LIBUKFS_EROFS: 'y'
+`
+	requireValidSchema(t, input)
+	doc, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+	require.NotNil(t, doc.Unikraft)
+	require.Equal(t, UnikraftTypeKernel, doc.Unikraft.Type)
+	require.Equal(t, "./build/helloworld_kraftcloud-x86_64", doc.Unikraft.Source)
+	value, ok := doc.Unikraft.KConfig.Lookup("CONFIG_LIBUKFS_EROFS")
+	require.True(t, ok)
+	require.Equal(t, "y", value)
+}
+
+func TestParseKernelAndUnikraftConflict(t *testing.T) {
+	input := `spec: v0.7
+kernel: ./build/helloworld_kraftcloud-x86_64
+unikraft: https://github.com/unikraft/unikraft.git
+`
+	_, err := ParseBytes([]byte(input))
+	require.ErrorContains(t, err, "'kernel' and 'unikraft' cannot both be specified")
 }
 
 func TestParseTargetsMapFields(t *testing.T) {
@@ -342,7 +412,7 @@ func TestParseTargetsWithKConfigMap(t *testing.T) {
 
 name: helloworld
 
-unikraft: stable
+unikraft: https://github.com/unikraft/unikraft.git
 
 targets:
 - name: helloworld-qemu-x86_64-9pfs
