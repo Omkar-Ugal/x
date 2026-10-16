@@ -140,6 +140,15 @@ func TestContentStoreFileVerified(t *testing.T) {
 			require.ErrorIs(t, err, ErrDigestMismatch)
 			require.ErrorIs(t, rc.Close(), ErrDigestMismatch)
 		})
+
+		t.Run(tc.name+" served with more after it fails before its last bytes", func(t *testing.T) {
+			t.Parallel()
+
+			rc := open(t, tc.path, append(bytes.Clone(blob), "more"...))
+			_, err := io.ReadFull(rc, make([]byte, len(tc.want)))
+			require.ErrorIs(t, err, ErrDigestMismatch)
+			require.ErrorIs(t, rc.Close(), ErrDigestMismatch)
+		})
 	}
 
 	t.Run("a blob with a negative size is refused", func(t *testing.T) {

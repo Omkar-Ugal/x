@@ -62,7 +62,8 @@ func newVerifiedReader(ra content.ReaderAt, desc ocispec.Descriptor) (*verifiedR
 		return nil, fmt.Errorf("blob %s: invalid size %d", desc.Digest, desc.Size)
 	}
 	verifier := desc.Digest.Verifier()
-	tee := io.TeeReader(io.NewSectionReader(ra, 0, desc.Size), verifier)
+	// A byte past desc, so a blob served with more after it fails its digest.
+	tee := io.TeeReader(io.NewSectionReader(ra, 0, desc.Size+1), verifier)
 
 	return &verifiedReader{
 		ra:        ra,
