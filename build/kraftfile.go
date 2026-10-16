@@ -8,6 +8,8 @@ package build
 import (
 	"cmp"
 	"fmt"
+	"slices"
+	"strings"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
@@ -27,11 +29,16 @@ func KraftfileBuildOpts(kf *kraftfile.Kraftfile, src Source) (BuildOpts, error) 
 		opts.Runtime = string(*kf.Runtime)
 	}
 
-	if kf.Unikraft != nil {
-		return BuildOpts{}, fmt.Errorf("unikraft configuration not currently supported")
+	if kf.Kernel != nil {
+		kernel, err := kraftfileKernel(kf, src)
+		if err != nil {
+			return BuildOpts{}, err
+		}
+		opts.Kernel = kernel
 	}
+
 	if kf.Libraries != nil {
-		// these are the same build process as kf.Unikraft
+		// these are the same build process as kf.Kernel
 		return BuildOpts{}, fmt.Errorf("library configuration not currently supported")
 	}
 	if kf.Volumes != nil {
@@ -41,18 +48,11 @@ func KraftfileBuildOpts(kf *kraftfile.Kraftfile, src Source) (BuildOpts, error) 
 		return BuildOpts{}, fmt.Errorf("template configuration not currently supported")
 	}
 
+	if kf.Kernel != nil {
+		opts.kconfig = slices.Clone(kf.Kernel.KConfig)
+	}
 	for _, target := range kf.Targets {
-		features := make([]string, 0, len(target.KConfig))
-		for _, kv := range target.KConfig {
-			features = append(features, fmt.Sprintf("%s=%v", kv.Key, kv.Value))
-		}
-		version := fmt.Sprint(target.KConfig.Get("CONFIG_UK_FULLVERSION"))
-		opts.Platform = append(opts.Platform, ocispec.Platform{
-			Architecture: target.Arch,
-			OS:           target.Plat,
-			OSVersion:    version,
-			OSFeatures:   features,
-		})
+		opts.Platform = append(opts.Platform, opts.kconfigPlatform(target.Arch, target.Plat, target.KConfig))
 	}
 
 	for _, rom := range kf.Roms {
@@ -90,4 +90,65 @@ func KraftfileBuildOpts(kf *kraftfile.Kraftfile, src Source) (BuildOpts, error) 
 	}
 
 	return opts, nil
+}
+
+// kraftfileKernel returns the host path of the already-built kernel that the
+// kernel entry of kf names.
+func kraftfileKernel(kf *kraftfile.Kraftfile, src Source) (string, error) {
+	path := kf.Kernel.Source
+	if path != "" && !strings.Contains(path, "://") {
+		switch src := src.(type) {
+		case nil:
+		case LocalSource:
+			path = src.join(path)
+		case StateSource:
+			return "", fmt.Errorf("kernel cannot come from an LLB state")
+		default:
+			return "", fmt.Errorf("unsupported source %T", src)
+		}
+	}
+
+	typ := cmp.Or(kf.Kernel.Type, kraftfile.KernelTypeSource)
+	if kf.Kernel.Type == "" && path != "" {
+		var err error
+		typ, err = detectKernelType(path)
+		if err != nil {
+			return "", err
+		}
+	}
+	if typ != kraftfile.KernelTypeKernel {
+		return "", fmt.Errorf("building unikraft from source not currently supported")
+	}
+	if path == "" {
+		return "", fmt.Errorf("kernel entry is missing a source path")
+	}
+	if kf.Runtime != nil {
+		return "", fmt.Errorf("kernel and runtime configuration are mutually exclusive")
+	}
+	if kf.Kernel.Version != "" {
+		return "", fmt.Errorf("kernel entry does not support a version")
+	}
+	return path, nil
+}
+
+// kconfigPlatform returns the platform arch/plat, with the kernel-level
+// kconfig of o merged under the target's own.
+func (o BuildOpts) kconfigPlatform(arch, plat string, target kraftfile.Map) ocispec.Platform {
+	kconfig := slices.Clone(o.kconfig)
+	kconfig.Merge(target)
+
+	var features []string
+	for _, kv := range kconfig {
+		features = append(features, fmt.Sprintf("%s=%v", kv.Key, kv.Value))
+	}
+	var version string
+	if value, ok := kconfig.Lookup("CONFIG_UK_FULLVERSION"); ok {
+		version = fmt.Sprint(value)
+	}
+	return ocispec.Platform{
+		Architecture: arch,
+		OS:           plat,
+		OSVersion:    version,
+		OSFeatures:   features,
+	}
 }
