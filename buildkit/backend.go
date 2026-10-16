@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 
 	"github.com/moby/buildkit/client"
 )
@@ -61,6 +62,10 @@ type Daemon struct {
 
 	// docker, if set, carries Client's connection.
 	docker io.Closer
+
+	// edge, if set, opens a connection to the builder through the TLS that the
+	// platform's edge terminates.
+	edge func(ctx context.Context) (net.Conn, error)
 }
 
 // TLS holds the PEM-encoded CA, client certificate and client key for a

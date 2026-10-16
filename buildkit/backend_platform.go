@@ -121,7 +121,11 @@ func (p *Platform) Acquire(ctx context.Context, key Key) (*Daemon, error) {
 		return nil, fmt.Errorf("builder %s: %w, delete it to recreate it", name, err)
 	}
 	addr := net.JoinHostPort(strings.TrimSuffix(inst.ServiceGroup.Domains[0].Fqdn, "."), strconv.Itoa(port))
-	c, err := dial(ctx, addr, t, p.insecure)
+	edge, err := edgeDialer(addr, p.insecure)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to builder %s: %w", name, err)
+	}
+	c, err := dial(ctx, addr, t, edge)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to builder %s: %w", name, err)
 	}
@@ -130,7 +134,7 @@ func (p *Platform) Acquire(ctx context.Context, key Key) (*Daemon, error) {
 		c.Close()
 		return nil, fmt.Errorf("waiting for builder %s: %w", name, err)
 	}
-	return &Daemon{Client: c, Addr: addr, TLS: t}, nil
+	return &Daemon{Client: c, Addr: addr, TLS: t, edge: edge}, nil
 }
 
 // instance returns the named builder instance, creating it if there is none
@@ -248,21 +252,29 @@ func gcKeepStorage(cacheMiB uint64) string {
 
 // dial connects to buildkitd at addr with buildkit's mTLS inside the TLS that
 // the platform's edge terminates.
-func dial(ctx context.Context, addr string, t TLS, insecure bool) (*client.Client, error) {
+func dial(ctx context.Context, addr string, t TLS, edge func(context.Context) (net.Conn, error)) (*client.Client, error) {
 	inner, err := t.config()
 	if err != nil {
 		return nil, err
 	}
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, err
-	}
-	edge := &tls.Dialer{Config: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}}
 	return client.New(ctx, "tcp://"+addr,
 		client.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			return edge.DialContext(ctx, "tcp", addr)
+			return edge(ctx)
 		}),
 		client.WithGRPCDialOption(grpc.WithTransportCredentials(credentials.NewTLS(inner))),
 		client.WithGRPCDialOption(grpc.WithAuthority(t.ServerName)),
 	)
+}
+
+// edgeDialer returns a function that opens a connection to addr through the
+// TLS that the platform's edge terminates.
+func edgeDialer(addr string, insecure bool) (func(context.Context) (net.Conn, error), error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	d := &tls.Dialer{Config: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}}
+	return func(ctx context.Context) (net.Conn, error) {
+		return d.DialContext(ctx, "tcp", addr)
+	}, nil
 }

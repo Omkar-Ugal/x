@@ -15,10 +15,19 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 )
 
 const serverName = "buildkitd"
+
+// Names of the files that WriteDir writes, which buildctl --tlsdir reads.
+const (
+	caFile   = "ca.pem"
+	certFile = "cert.pem"
+	keyFile  = "key.pem"
+)
 
 // generateCerts creates a throwaway CA, signs a server and a client
 // certificate with it, drops the CA key, and returns the PEMs as instance env.
@@ -100,6 +109,41 @@ func clientTLS(env map[string]string) (TLS, error) {
 		Cert:       []byte(env[EnvTLSClientCert]),
 		Key:        []byte(env[EnvTLSClientKey]),
 	}, nil
+}
+
+// WriteDir writes the CA, certificate and key to dir, with the file names that
+// buildctl --tlsdir reads.
+func (t TLS) WriteDir(dir string) error {
+	if len(t.CA) == 0 {
+		return errors.New("no TLS to write")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	for name, data := range map[string][]byte{caFile: t.CA, certFile: t.Cert, keyFile: t.Key} {
+		if err := writePrivate(filepath.Join(dir, name), data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writePrivate writes data to a new file that only the owner can read, then
+// moves it to path, so that the mode of an old file at path does not apply.
+func writePrivate(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // config returns the client side of buildkit's mTLS.
