@@ -45,6 +45,7 @@ type Platform struct {
 	memoryMB int64
 	cacheMB  uint64
 	cooldown time.Duration
+	insecure bool
 }
 
 // Option configures a Platform.
@@ -76,6 +77,10 @@ func WithCacheSize(mb uint64) Option {
 // 5 minutes by default.
 func WithCooldown(d time.Duration) Option {
 	return func(p *Platform) { p.cooldown = d }
+}
+
+func WithInsecure(insecure bool) Option {
+	return func(p *Platform) { p.insecure = insecure }
 }
 
 // NewPlatform returns a Platform that manages builders through c, which
@@ -116,7 +121,7 @@ func (p *Platform) Acquire(ctx context.Context, key Key) (*Daemon, error) {
 		return nil, fmt.Errorf("builder %s: %w, delete it to recreate it", name, err)
 	}
 	addr := net.JoinHostPort(strings.TrimSuffix(inst.ServiceGroup.Domains[0].Fqdn, "."), strconv.Itoa(port))
-	c, err := dial(ctx, addr, t)
+	c, err := dial(ctx, addr, t, p.insecure)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to builder %s: %w", name, err)
 	}
@@ -243,7 +248,7 @@ func gcKeepStorage(cacheMiB uint64) string {
 
 // dial connects to buildkitd at addr with buildkit's mTLS inside the TLS that
 // the platform's edge terminates.
-func dial(ctx context.Context, addr string, t TLS) (*client.Client, error) {
+func dial(ctx context.Context, addr string, t TLS, insecure bool) (*client.Client, error) {
 	inner, err := t.config()
 	if err != nil {
 		return nil, err
@@ -252,7 +257,7 @@ func dial(ctx context.Context, addr string, t TLS) (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	edge := &tls.Dialer{Config: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}}
+	edge := &tls.Dialer{Config: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}}
 	return client.New(ctx, "tcp://"+addr,
 		client.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 			return edge.DialContext(ctx, "tcp", addr)
