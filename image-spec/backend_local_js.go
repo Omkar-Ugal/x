@@ -48,19 +48,19 @@ func DeleteOCILayoutNamed(path string, tag string) error {
 	return errLocalImages
 }
 
-func LoadTarball(ctx context.Context, tarballPath string, platform platforms.MatchComparer) (*Image, error) {
+func LoadTarball(ctx context.Context, tarballPath string, desc ocispec.Descriptor, platform platforms.MatchComparer) (*Image, error) {
 	return nil, errLocalImages
 }
 
-func LoadAllTarballs(ctx context.Context, tarballPath string, platform platforms.MatchComparer) ([]*Image, error) {
+func LoadAllTarballs(ctx context.Context, tarballPath string, desc ocispec.Descriptor, platform platforms.MatchComparer) ([]*Image, error) {
 	return nil, errLocalImages
 }
 
-func LoadTarballReader(ctx context.Context, r io.Reader, platform platforms.MatchComparer) (*Image, error) {
+func LoadTarballReader(ctx context.Context, r io.Reader, desc ocispec.Descriptor, platform platforms.MatchComparer) (*Image, error) {
 	return nil, errLocalImages
 }
 
-func LoadAllTarballReaders(ctx context.Context, r io.Reader, platform platforms.MatchComparer) ([]*Image, error) {
+func LoadAllTarballReaders(ctx context.Context, r io.Reader, desc ocispec.Descriptor, platform platforms.MatchComparer) ([]*Image, error) {
 	return nil, errLocalImages
 }
 

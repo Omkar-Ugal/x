@@ -54,7 +54,11 @@ func (b Builder) buildKernel(ctx context.Context, opts BuildOpts) ([]*imagespec.
 
 	var imgs []*imagespec.Image
 	err = progress.Step(progress.WithPrefix(b.progressWriter(), "kernel"), "resolve "+opts.Runtime, func() (err error) {
-		imgs, err = access.LoadAll(ctx, runtime, matcher)
+		res, err := access.Resolve(ctx, runtime)
+		if err != nil {
+			return fmt.Errorf("resolving runtime image: %w", err)
+		}
+		imgs, err = access.LoadAll(ctx, res, matcher)
 		if len(opts.Platform) == 0 && errors.Is(err, errdefs.ErrNotFound) {
 			return fmt.Errorf("%w for %s: %w", ErrNoRuntimeTarget, matcher, err)
 		}

@@ -48,7 +48,11 @@ func (c *InspectCmd) Run(ctx context.Context) (rerr error) {
 	}
 
 	accessor := newAccessor(insecure)
-	imgs, err := accessor.LoadAll(ctx, loc, platforms.All)
+	res, err := accessor.Resolve(ctx, loc)
+	if err != nil {
+		return err
+	}
+	imgs, err := accessor.LoadAll(ctx, res, platforms.All)
 	if err != nil {
 		return err
 	}
@@ -67,14 +71,14 @@ func (c *InspectCmd) Run(ctx context.Context) (rerr error) {
 			fmt.Fprintln(w, "\n"+strings.Repeat("-", 80)+"\n")
 		}
 
-		displayName := name(img.Name, img.Descriptor)
+		displayName := name(img.Reference, img.ManifestDescriptor)
 		if displayName == "" {
 			displayName = c.Image
 		}
 		fmt.Fprintf(w, "Name: %s\n", displayName)
 		mediaType := ""
-		if img.Descriptor.MediaType != "" {
-			mediaType = img.Descriptor.MediaType
+		if img.ManifestDescriptor.MediaType != "" {
+			mediaType = img.ManifestDescriptor.MediaType
 		}
 		fmt.Fprintf(w, "MediaType: %s\n", mediaType)
 		fmt.Println()
@@ -113,14 +117,14 @@ func (c *InspectCmd) Run(ctx context.Context) (rerr error) {
 		if kernel := img.Kernel; kernel != nil {
 			kernelDesc, _ := kernel.Source()
 			fmt.Fprintf(w, "Kernel:\n")
-			fmt.Fprintf(w, "  Name: %s\n", name(img.Name, kernelDesc))
+			fmt.Fprintf(w, "  Name: %s\n", name(img.Reference, kernelDesc))
 			fmt.Fprintf(w, "  Path: %s\n", kernel.Path())
 			fmt.Fprintf(w, "  Size: %.2f\n", units.Bytes(kernelDesc.Size))
 		}
 		if initrd := img.Initrd; initrd != nil {
 			initrdDesc, _ := initrd.Source()
 			fmt.Fprintf(w, "Initrd:\n")
-			fmt.Fprintf(w, "  Name: %s\n", name(img.Name, initrdDesc))
+			fmt.Fprintf(w, "  Name: %s\n", name(img.Reference, initrdDesc))
 			fmt.Fprintf(w, "  Path: %s\n", initrd.Path())
 			fmt.Fprintf(w, "  Size: %.2f\n", units.Bytes(initrdDesc.Size))
 		}
@@ -128,7 +132,7 @@ func (c *InspectCmd) Run(ctx context.Context) (rerr error) {
 			fmt.Fprintf(w, "ROMs:\n")
 			for _, rom := range roms {
 				romDesc, _ := rom.Source()
-				fmt.Fprintf(w, "  -  Name: %s\n", name(img.Name, romDesc))
+				fmt.Fprintf(w, "  -  Name: %s\n", name(img.Reference, romDesc))
 				fmt.Fprintf(w, "     Path: %s\n", rom.Path())
 				fmt.Fprintf(w, "     Size: %.2f\n", units.Bytes(romDesc.Size))
 			}
@@ -177,7 +181,11 @@ func (c *CopyCmd) Run(ctx context.Context) (rerr error) {
 	}
 
 	accessor := newAccessor(insecure)
-	imgs, err := accessor.LoadAll(ctx, src, platforms.All)
+	res, err := accessor.Resolve(ctx, src)
+	if err != nil {
+		return err
+	}
+	imgs, err := accessor.LoadAll(ctx, res, platforms.All)
 	if err != nil {
 		return err
 	}

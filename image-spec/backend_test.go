@@ -196,6 +196,14 @@ func TestBuildImageMultiPlatform(t *testing.T) {
 				}
 				require.True(t, sawInitrd)
 			}
+
+			loaded, err := LoadAllContent(ctx, store, idxDesc, platforms.All)
+			require.NoError(t, err)
+			require.Len(t, loaded, len(idx.Manifests))
+			for _, img := range loaded {
+				require.Contains(t, idx.Manifests, img.ManifestDescriptor)
+				require.NoError(t, img.Close())
+			}
 		})
 	}
 }

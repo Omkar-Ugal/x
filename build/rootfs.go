@@ -530,7 +530,11 @@ func (b Builder) buildRootfsOCI(ctx context.Context, opts BuildOpts, part string
 		verb = "pull"
 	}
 	err = progress.Step(progress.WithPrefix(b.progressWriter(), part), verb+" "+opts.Rootfs.Path, func() (err error) {
-		loaded, err = access.LoadAll(ctx, uri, matcher)
+		res, err := access.Resolve(ctx, uri)
+		if err != nil {
+			return fmt.Errorf("resolving rootfs image %q: %w", opts.Rootfs.Path, err)
+		}
+		loaded, err = access.LoadAll(ctx, res, matcher)
 		if err != nil {
 			return fmt.Errorf("pulling rootfs image %q: %w", opts.Rootfs.Path, err)
 		}
@@ -706,8 +710,8 @@ func copyInitrd(ctx context.Context, f *os.File, initrd imagespec.File, opts Bui
 // solve is reported under prefix.
 func flattenImageLayers(ctx context.Context, s *solver, opts BuildOpts, src *imagespec.Image, uri *imagespec.Location, dst *os.File, prefix string) error {
 	ref := uri.Path
-	if src.Descriptor.Digest != "" && !strings.Contains(ref, "@") {
-		ref += "@" + src.Descriptor.Digest.String()
+	if src.ManifestDescriptor.Digest != "" && !strings.Contains(ref, "@") {
+		ref += "@" + src.ManifestDescriptor.Digest.String()
 	}
 
 	ep := getPlatform(src.Image.Platform)

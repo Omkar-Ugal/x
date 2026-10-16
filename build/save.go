@@ -55,19 +55,19 @@ func (b Builder) Save(ctx context.Context, dest *imagespec.Location, images ...*
 		}
 	}
 
-	var desc ocispec.Descriptor
+	var res imagespec.Resolved
 	err := progress.Step(progress.WithPrefix(b.progressWriter(), verb), saved.Ref, func() (err error) {
-		desc, err = access.Save(ctx, dest, images...)
+		res, err = access.Save(ctx, dest, images...)
 		return err
 	})
 	if err != nil {
 		return Saved{}, err
 	}
-	saved.Digest = desc.Digest
+	saved.Digest = res.Descriptor.Digest
 
 	log.G(ctx).Debug().
 		Str("ref", saved.Ref).
-		Str("digest", desc.Digest.String()).
+		Str("digest", saved.Digest.String()).
 		Msg("saved images")
 
 	return saved, nil
