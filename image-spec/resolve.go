@@ -20,11 +20,12 @@ type Resolved struct {
 	// Reference is the reference as requested, or zero for a local layout or
 	// archive.
 	Reference reference.Reference
-	// ResolvedReference names where the image was found, pinned, or zero for a
-	// local layout or archive. For a registry it is Reference without its tag
-	// and with the digest of Descriptor; for a layout served over HTTP it is
-	// the URL the origin redirected to, or zero if it served the tag directly.
-	// The digest in that URL is only the origin's address for the tarball.
+	// ResolvedReference is the canonical name of the image where it was found,
+	// or zero for a local layout or archive. For a registry it is Reference
+	// with the tag it resolved, and the digest of Descriptor; for a layout
+	// served over HTTP it is the URL the origin redirected to, or zero if it
+	// served the tag directly. The digest in that URL is only the origin's
+	// address for the tarball.
 	ResolvedReference reference.Reference
 	// Location is where Load reads from: the pinned location of a remote, or
 	// the local layout or archive as given, which Resolve leaves alone.

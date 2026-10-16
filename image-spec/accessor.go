@@ -90,9 +90,9 @@ func (accessor *Accessor) Resolve(ctx context.Context, src *Location) (Resolved,
 		if err != nil {
 			return Resolved{}, err
 		}
-		resolved, err := reference.FromNamed(canonical)
+		resolved, err := registryResolvedReference(named, desc)
 		if err != nil {
-			return Resolved{}, fmt.Errorf("naming resolved image %q: %w", canonical, err)
+			return Resolved{}, err
 		}
 		return Resolved{
 			Reference:         requested,
@@ -255,9 +255,9 @@ func (accessor *Accessor) Save(ctx context.Context, dest *Location, img ...*Imag
 		if err != nil {
 			return Resolved{}, fmt.Errorf("saved image %q has an invalid digest: %w", named, err)
 		}
-		resolved, err := reference.FromNamed(canonical)
+		resolved, err := registryResolvedReference(named, desc)
 		if err != nil {
-			return Resolved{}, fmt.Errorf("naming saved image %q: %w", canonical, err)
+			return Resolved{}, err
 		}
 		return Resolved{
 			Reference:         requested,

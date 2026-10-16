@@ -120,11 +120,25 @@ func registryResolved(named distref.Named, desc ocispec.Descriptor) Resolved {
 	}
 	if ref, err := reference.FromNamed(named); err == nil {
 		res.Reference = ref
-		if ref.Digest() != "" {
-			res.ResolvedReference = ref.WithoutTag()
-		}
+	}
+	if ref, err := registryResolvedReference(named, desc); err == nil {
+		res.ResolvedReference = ref
 	}
 	return res
+}
+
+// registryResolvedReference names the image desc describes under named, with
+// named's tag (latest if it has none and no digest) and desc's digest.
+func registryResolvedReference(named distref.Named, desc ocispec.Descriptor) (reference.Reference, error) {
+	ref, err := reference.FromNamed(distref.TagNameOnly(named))
+	if err != nil {
+		return reference.Reference{}, fmt.Errorf("parsing image reference %q: %w", named, err)
+	}
+	resolved, err := ref.WithDigest(desc.Digest)
+	if err != nil {
+		return reference.Reference{}, fmt.Errorf("naming resolved image %q: %w", named, err)
+	}
+	return resolved, nil
 }
 
 // SaveRegistryImage saves a image to a remote registry.
