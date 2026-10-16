@@ -31,6 +31,15 @@ import (
 // say, in seconds, the same as buildkit's own auth provider assumes.
 const defaultExpiration = 60
 
+// Option configures an Attachable.
+type Option func(*attachable)
+
+// WithHTTPClient fetches the tokens through c instead of http.DefaultClient.
+// The daemon names the realm of each token, so c can keep that in bounds.
+func WithHTTPClient(c *http.Client) Option {
+	return func(a *attachable) { a.client = c }
+}
+
 // Attachable returns a session attachable that answers BuildKit's requests
 // for registry credentials with c, as buildkit's own auth provider does from
 // the docker config. For a host that c has credentials for, the daemon has
@@ -38,12 +47,16 @@ const defaultExpiration = 60
 // cross the session for a registry that issues them. The daemon can still
 // ask for the credentials, and does for basic auth, so it must be trusted
 // with them.
-func (c Credentials) Attachable() session.Attachable {
-	return &attachable{
+func (c Credentials) Attachable(opts ...Option) session.Attachable {
+	a := &attachable{
 		creds:  c,
 		seed:   []byte(rand.Text()),
 		client: http.DefaultClient,
 	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
 }
 
 type attachable struct {
