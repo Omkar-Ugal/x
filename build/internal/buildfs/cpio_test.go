@@ -93,22 +93,26 @@ func TestCreateCPIOInodesFollowWalkOrder(t *testing.T) {
 	assert.Zero(t, headers[1].Size, "only the first link carries the data")
 }
 
-func TestCreateCPIOIdenticalTreesAreIdentical(t *testing.T) {
-	mtime := time.Unix(1700000000, 0)
-	newTree := func() string {
-		root := t.TempDir()
-		require.NoError(t, os.MkdirAll(filepath.Join(root, "etc"), 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(root, "etc", "hosts"), []byte("127.0.0.1 localhost\n"), 0o644))
-		require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("aaa"), 0o644))
-		require.NoError(t, os.Link(filepath.Join(root, "a.txt"), filepath.Join(root, "b.txt")))
-		for _, p := range []string{"etc/hosts", "a.txt", "etc"} {
-			require.NoError(t, os.Chtimes(filepath.Join(root, p), mtime, mtime))
-		}
-		return root
-	}
+// newTree writes a tree with a directory, files and a hardlink. Each call
+// gives the same tree in a new location.
+func newTree(t *testing.T) string {
+	t.Helper()
 
-	first := createCPIO(t, os.DirFS(newTree()))
-	second := createCPIO(t, os.DirFS(newTree()))
+	mtime := time.Unix(1700000000, 0)
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "etc"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "etc", "hosts"), []byte("127.0.0.1 localhost\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("aaa"), 0o644))
+	require.NoError(t, os.Link(filepath.Join(root, "a.txt"), filepath.Join(root, "b.txt")))
+	for _, p := range []string{"etc/hosts", "a.txt", "etc", "."} {
+		require.NoError(t, os.Chtimes(filepath.Join(root, p), mtime, mtime))
+	}
+	return root
+}
+
+func TestCreateCPIOIdenticalTreesAreIdentical(t *testing.T) {
+	first := createCPIO(t, os.DirFS(newTree(t)))
+	second := createCPIO(t, os.DirFS(newTree(t)))
 	require.Equal(t, first, second, "identical trees in different locations must give identical archives")
 }
 

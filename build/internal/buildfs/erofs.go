@@ -8,6 +8,7 @@ package buildfs
 import (
 	"io"
 	"io/fs"
+	"time"
 
 	"github.com/unikraft/go-archivefs/erofs"
 )
@@ -18,7 +19,11 @@ func CreateEROFS(w io.WriterAt, fsys fs.FS, opts ...CreateOption) error {
 	for _, opt := range opts {
 		opt(&c)
 	}
-	var erofsOpts []erofs.ErofsCreateOption
+	// A zero UUID and build time make the same tree give the same image.
+	erofsOpts := []erofs.ErofsCreateOption{
+		erofs.WithUUID([16]byte{}),
+		erofs.WithBuildTime(time.Unix(0, 0)),
+	}
 	if c.allRoot {
 		erofsOpts = append(erofsOpts, erofs.WithAllRoot(true))
 	}
