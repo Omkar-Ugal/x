@@ -579,6 +579,9 @@ func (b Builder) buildRootfsOCI(ctx context.Context, opts BuildOpts, part string
 			cfg = applyConfigOverrides(src.Image.Config, opts)
 		}
 
+		// Date the rootfs by its source, so that a conversion is reproducible.
+		created := imagespec.ImageMetadata{Created: src.Metadata().Created}
+
 		if src.Initrd != nil {
 			f, err := os.CreateTemp(b.TempDir, "unikraft-rootfs-*")
 			if err != nil {
@@ -602,6 +605,7 @@ func (b Builder) buildRootfsOCI(ctx context.Context, opts BuildOpts, part string
 				imagespec.WithImageConfig(cfg),
 				imagespec.WithPlatform(p),
 				imagespec.WithInitrd(imagespec.NewTempOSFile(f)),
+				imagespec.WithImageMetadata(created),
 			))
 			continue
 		}
@@ -662,6 +666,7 @@ func (b Builder) buildRootfsOCI(ctx context.Context, opts BuildOpts, part string
 			imagespec.WithImageConfig(cfg),
 			imagespec.WithPlatform(p),
 			imagespec.WithInitrd(imagespec.NewTempOSFile(f)),
+			imagespec.WithImageMetadata(created),
 		))
 	}
 

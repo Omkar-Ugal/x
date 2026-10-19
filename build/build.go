@@ -152,9 +152,7 @@ func (b Builder) Build(ctx context.Context, opts BuildOpts) ([]*imagespec.Image,
 		return nil, fmt.Errorf("no runtime, rootfs, or roms specified: nothing to build")
 	}
 
-	meta := imagespec.ImageMetadata{
-		Created: new(time.Now()),
-	}
+	now := time.Now()
 
 	// Build kernel if a runtime is specified. This also determines the
 	// set of platforms we're building for.
@@ -240,8 +238,20 @@ func (b Builder) Build(ctx context.Context, opts BuildOpts) ([]*imagespec.Image,
 	// Assemble images, one per platform.
 	images := make([]*imagespec.Image, 0, len(opts.Platform))
 	for i, p := range opts.Platform {
+		// Date the image by its newest part. A part without a date is new.
+		var dates []*time.Time
+		if i < len(kernels) {
+			dates = append(dates, kernels[i].Metadata().Created)
+		}
+		if i < len(roots) {
+			dates = append(dates, roots[i].Metadata().Created)
+		}
+		if len(romFiles) > 0 {
+			dates = append(dates, nil)
+		}
+
 		imgOpts := []imagespec.NewImageOpt{
-			imagespec.WithImageMetadata(meta),
+			imagespec.WithImageMetadata(imagespec.ImageMetadata{Created: new(newest(now, dates...))}),
 			imagespec.WithPlatform(p),
 		}
 
@@ -274,4 +284,22 @@ func (b Builder) Build(ctx context.Context, opts BuildOpts) ([]*imagespec.Image,
 	}
 
 	return images, nil
+}
+
+// newest returns the latest of dates. A nil date is now.
+func newest(now time.Time, dates ...*time.Time) time.Time {
+	var latest time.Time
+	for _, date := range dates {
+		t := now
+		if date != nil {
+			t = *date
+		}
+		if t.After(latest) {
+			latest = t
+		}
+	}
+	if latest.IsZero() {
+		return now
+	}
+	return latest
 }
