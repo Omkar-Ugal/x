@@ -197,7 +197,7 @@ func (p *Platform) get(ctx context.Context, name string) (*platform.Instance, er
 // newly generated mTLS certificates and keys in its env.
 func (p *Platform) create(ctx context.Context, name string) error {
 	vol := name + "-cache"
-	_, err := p.c.CreateVolume(ctx, platform.CreateVolumeRequest{Name: &vol, SizeMb: new(p.cacheMB)})
+	_, err := p.c.CreateVolume(ctx, platform.CreateVolumeRequest{Name: &vol, SizeMb: new(p.cacheMB), Filesystem: new("ext4")})
 	if err != nil && !platform.ErrorContainsOnly(err, platform.APIHTTPErrorAlreadyExists) {
 		return fmt.Errorf("creating cache volume %s: %w", vol, quota(err))
 	}
