@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -72,12 +73,21 @@ func TestPlatformAcquireQuota(t *testing.T) {
 		name string
 		// answers holds the body for each "METHOD /path", else success.
 		answers map[string]string
+		// deleted is the volumes it deletes.
+		deleted []platform.NameOrUUID
 	}{
 		{
 			name: "a new builder over the quota is refused",
 			answers: map[string]string{
 				"POST /v1/volumes": fmt.Sprintf(quotaError, "volumes"),
 			},
+		},
+		{
+			name: "a new builder over the quota is refused and leaves no cache volume",
+			answers: map[string]string{
+				"POST /v1/instances": fmt.Sprintf(quotaError, "instances"),
+			},
+			deleted: []platform.NameOrUUID{{Name: new("buildkit-default-cache")}},
 		},
 		{
 			name: "a builder in standby over the quota is refused",
@@ -88,7 +98,16 @@ func TestPlatformAcquireQuota(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var (
+				mu      sync.Mutex
+				deleted []platform.NameOrUUID
+			)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodDelete && r.URL.Path == "/v1/volumes" {
+					mu.Lock()
+					defer mu.Unlock()
+					assert.NoError(t, json.NewDecoder(r.Body).Decode(&deleted))
+				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(cmp.Or(tc.answers[r.Method+" "+r.URL.Path], `{"status": "success"}`)))
 			}))
@@ -96,7 +115,10 @@ func TestPlatformAcquireQuota(t *testing.T) {
 			c := platform.NewClient(platform.WithDefaultEndpoint(srv.URL), platform.WithToken("token"))
 
 			_, err := NewPlatform(c).Acquire(t.Context(), Key{})
-			assert.ErrorIs(t, err, ErrQuota)
+			require.ErrorIs(t, err, ErrQuota)
+			mu.Lock()
+			defer mu.Unlock()
+			assert.Equal(t, tc.deleted, deleted)
 		})
 	}
 }
