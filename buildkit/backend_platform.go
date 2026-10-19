@@ -198,6 +198,7 @@ func (p *Platform) get(ctx context.Context, name string) (*platform.Instance, er
 func (p *Platform) create(ctx context.Context, name string) error {
 	vol := name + "-cache"
 	_, err := p.c.CreateVolume(ctx, platform.CreateVolumeRequest{Name: &vol, SizeMb: new(p.cacheMB), Filesystem: new("ext4")})
+	newVolume := err == nil
 	if err != nil && !platform.ErrorContainsOnly(err, platform.APIHTTPErrorAlreadyExists) {
 		return fmt.Errorf("creating cache volume %s: %w", vol, quota(err))
 	}
@@ -228,7 +229,14 @@ func (p *Platform) create(ctx context.Context, name string) error {
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("creating builder %s: %w", name, quota(err))
+		err = quota(err)
+		// Only a refusal for quota surely left the new volume unused.
+		if newVolume && errors.Is(err, ErrQuota) {
+			if _, derr := p.c.DeleteVolumes(ctx, []platform.NameOrUUID{{Name: &vol}}); derr != nil {
+				err = errors.Join(err, fmt.Errorf("deleting cache volume %s: %w", vol, derr))
+			}
+		}
+		return fmt.Errorf("creating builder %s: %w", name, err)
 	}
 	return nil
 }
