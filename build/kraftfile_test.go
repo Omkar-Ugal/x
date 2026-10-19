@@ -94,6 +94,31 @@ func TestKraftfileToBuildOptsResolvesSources(t *testing.T) {
 	require.Equal(t, kraftfile.SourceTypeDirectory, opts.Roms[0].Type)
 }
 
+func TestKraftfileToBuildOptsAbsoluteSources(t *testing.T) {
+	abs := t.TempDir()
+	romPath := filepath.Join(abs, "romdir")
+	require.NoError(t, os.Mkdir(romPath, 0o755))
+	rootfsPath := filepath.Join(abs, "rootfs")
+	require.NoError(t, os.Mkdir(rootfsPath, 0o755))
+
+	runtime := kraftfile.Runtime("unikraft.io/unikraft.org/base")
+	kf := &kraftfile.Kraftfile{
+		Runtime: &runtime,
+		Rootfs: &kraftfile.FS{
+			Source: &kraftfile.FSSource{Path: rootfsPath},
+		},
+		Roms: []kraftfile.FS{
+			{Source: &kraftfile.FSSource{Path: romPath}},
+		},
+	}
+
+	opts, err := KraftfileBuildOpts(kf, LocalSource{Dir: t.TempDir()})
+	require.NoError(t, err)
+	require.Equal(t, rootfsPath, opts.Rootfs.Path)
+	require.Len(t, opts.Roms, 1)
+	require.Equal(t, romPath, opts.Roms[0].Path)
+}
+
 func TestKraftfileToBuildOptsStateSource(t *testing.T) {
 	kf := &kraftfile.Kraftfile{
 		Rootfs: &kraftfile.FS{
