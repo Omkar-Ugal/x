@@ -26,10 +26,7 @@ func CreateCPIO(ctx context.Context, w io.Writer, fsys fs.FS, opts ...CreateOpti
 	cw := cpio.NewWriter(w)
 	defer cw.Close()
 
-	type hardlinkKey struct {
-		device int
-		inode  int64
-	}
+	inodes := newInodeAllocator()
 	hardlinks := map[hardlinkKey]string{}
 
 	// Recursively walk and serialize to the output
@@ -58,6 +55,7 @@ func CreateCPIO(ctx context.Context, w io.Writer, fsys fs.FS, opts ...CreateOpti
 
 			// Populate platform specific information
 			fileInfoToCPIOHeader(info, header)
+			canonicalizeInode(inodes, header)
 
 			if c.allRoot {
 				header.Uid = 0
@@ -84,6 +82,7 @@ func CreateCPIO(ctx context.Context, w io.Writer, fsys fs.FS, opts ...CreateOpti
 
 		// Populate platform specific information
 		fileInfoToCPIOHeader(info, header)
+		source, isHardlink := canonicalizeInode(inodes, header)
 
 		if c.allRoot {
 			header.Uid = 0
@@ -94,14 +93,12 @@ func CreateCPIO(ctx context.Context, w io.Writer, fsys fs.FS, opts ...CreateOpti
 		switch {
 		case info.Mode().IsRegular():
 			header.Mode |= cpio.TypeRegular
-			isHardlink := header.Links > 1 && header.Inode != 0
 			if isHardlink {
-				key := hardlinkKey{device: header.DeviceID, inode: header.Inode}
-				if _, ok := hardlinks[key]; ok {
+				if _, ok := hardlinks[source]; ok {
 					header.Size = 0
 					break
 				}
-				hardlinks[key] = internal
+				hardlinks[source] = internal
 			}
 
 			data, err = fs.ReadFile(fsys, path)
@@ -141,6 +138,52 @@ func CreateCPIO(ctx context.Context, w io.Writer, fsys fs.FS, opts ...CreateOpti
 	}
 
 	return nil
+}
+
+// hardlinkKey identifies a file on the source filesystem.
+type hardlinkKey struct {
+	device int
+	inode  int64
+}
+
+// inodeAllocator gives archive inode numbers in walk order, so that the same
+// tree gives the same archive on all hosts.
+type inodeAllocator struct {
+	next   int64
+	groups map[hardlinkKey]int64
+}
+
+func newInodeAllocator() *inodeAllocator {
+	return &inodeAllocator{next: 1, groups: map[hardlinkKey]int64{}}
+}
+
+// get returns the archive inode for source. All links to one file get the
+// same inode.
+func (a *inodeAllocator) get(source hardlinkKey, linked bool) int64 {
+	if linked {
+		if inode, ok := a.groups[source]; ok {
+			return inode
+		}
+	}
+
+	inode := a.next
+	a.next++
+
+	if linked {
+		a.groups[source] = inode
+	}
+
+	return inode
+}
+
+// canonicalizeInode replaces the source inode on header with an archive inode.
+// It returns the source identity and true if the entry is one of many links.
+func canonicalizeInode(a *inodeAllocator, header *cpio.Header) (hardlinkKey, bool) {
+	source := hardlinkKey{device: header.DeviceID, inode: header.Inode}
+	linked := header.Links > 1 && header.Inode != 0
+	header.Inode = a.get(source, linked)
+
+	return source, linked
 }
 
 func fileInfoToCPIOHeader(info fs.FileInfo, header *cpio.Header) {
