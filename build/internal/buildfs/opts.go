@@ -5,9 +5,12 @@
 
 package buildfs
 
+import "github.com/unikraft/go-archivefs/erofs"
+
 // createOptions holds shared options for filesystem creation.
 type createOptions struct {
-	allRoot bool
+	allRoot     bool
+	fileInfoMap map[string]erofs.FileInfo
 }
 
 // CreateOption is an option for CreateCPIO and CreateEROFS.
@@ -18,5 +21,13 @@ type CreateOption func(*createOptions)
 func WithAllRoot(allRoot bool) CreateOption {
 	return func(co *createOptions) {
 		co.allRoot = allRoot
+	}
+}
+
+// WithFileInfoMap sets the owner and mode of each path in the map, keyed as
+// "/etc/passwd". WithAllRoot still sets the owner to root.
+func WithFileInfoMap(fileInfoMap map[string]erofs.FileInfo) CreateOption {
+	return func(co *createOptions) {
+		co.fileInfoMap = fileInfoMap
 	}
 }

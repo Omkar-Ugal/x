@@ -18,6 +18,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unikraft/go-archivefs"
+	"github.com/unikraft/go-archivefs/erofs"
 	"github.com/unikraft/go-cpio"
 )
 
@@ -35,6 +37,19 @@ func readCPIO(t *testing.T, data []byte) []*cpio.Header {
 		require.NoError(t, err)
 		headers = append(headers, hdr)
 	}
+}
+
+// headerByName returns the header of the entry called name.
+func headerByName(t *testing.T, headers []*cpio.Header, name string) *cpio.Header {
+	t.Helper()
+
+	for _, hdr := range headers {
+		if hdr.Name == name {
+			return hdr
+		}
+	}
+	require.Failf(t, "entry not found", "%s", name)
+	return nil
 }
 
 func createCPIO(t *testing.T, fsys fs.FS, opts ...CreateOption) []byte {
@@ -95,4 +110,44 @@ func TestCreateCPIOIdenticalTreesAreIdentical(t *testing.T) {
 	first := createCPIO(t, os.DirFS(newTree()))
 	second := createCPIO(t, os.DirFS(newTree()))
 	require.Equal(t, first, second, "identical trees in different locations must give identical archives")
+}
+
+func TestCreateCPIOFileInfoMap(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "etc"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "etc", "shadow"), []byte("root:!\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("aaa"), 0o644))
+
+	fileInfo := WithFileInfoMap(map[string]erofs.FileInfo{
+		"/etc":        {Uid: 0, Gid: 0, Mode: 0o750},
+		"/etc/shadow": {Uid: 12, Gid: 34, Mode: 0o600},
+	})
+
+	t.Run("source owners", func(t *testing.T) {
+		headers := readCPIO(t, createCPIO(t, os.DirFS(root), fileInfo))
+
+		shadow := headerByName(t, headers, "./etc/shadow")
+		assert.Equal(t, 12, shadow.Uid)
+		assert.Equal(t, 34, shadow.Guid)
+		assert.Equal(t, cpio.FileMode(0o600), shadow.Mode.Perm())
+		assert.True(t, shadow.Mode.IsRegular(), "the type bits must stay")
+
+		dir := headerByName(t, headers, "./etc")
+		assert.Equal(t, cpio.FileMode(0o750), dir.Mode.Perm())
+		assert.True(t, dir.Mode.IsDir(), "the type bits must stay")
+
+		source, err := os.Stat(filepath.Join(root, "a.txt"))
+		require.NoError(t, err)
+		unlisted := headerByName(t, headers, "./a.txt")
+		assert.Equal(t, cpio.FileMode(source.Mode().Perm()), unlisted.Mode.Perm())
+		assert.Equal(t, archivefs.GetUID(source.Sys()), unlisted.Uid)
+	})
+
+	t.Run("all root", func(t *testing.T) {
+		headers := readCPIO(t, createCPIO(t, os.DirFS(root), fileInfo, WithAllRoot(true)))
+
+		shadow := headerByName(t, headers, "./etc/shadow")
+		assert.Zero(t, shadow.Uid)
+		assert.Zero(t, shadow.Guid)
+	})
 }

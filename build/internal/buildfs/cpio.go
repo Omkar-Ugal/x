@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	gopath "path"
 
 	"github.com/unikraft/go-archivefs"
 	"github.com/unikraft/go-cpio"
@@ -55,6 +56,7 @@ func CreateCPIO(ctx context.Context, w io.Writer, fsys fs.FS, opts ...CreateOpti
 
 			// Populate platform specific information
 			fileInfoToCPIOHeader(info, header)
+			applyFileInfoMap(&c, path, header)
 			canonicalizeInode(inodes, header)
 
 			if c.allRoot {
@@ -82,6 +84,7 @@ func CreateCPIO(ctx context.Context, w io.Writer, fsys fs.FS, opts ...CreateOpti
 
 		// Populate platform specific information
 		fileInfoToCPIOHeader(info, header)
+		applyFileInfoMap(&c, path, header)
 		source, isHardlink := canonicalizeInode(inodes, header)
 
 		if c.allRoot {
@@ -184,6 +187,23 @@ func canonicalizeInode(a *inodeAllocator, header *cpio.Header) (hardlinkKey, boo
 	header.Inode = a.get(source, linked)
 
 	return source, linked
+}
+
+// applyFileInfoMap sets the owner and mode of path from the WithFileInfoMap
+// entry. It keeps the type bits.
+func applyFileInfoMap(c *createOptions, path string, header *cpio.Header) {
+	if c.fileInfoMap == nil {
+		return
+	}
+
+	info, ok := c.fileInfoMap[gopath.Join("/", path)]
+	if !ok {
+		return
+	}
+
+	header.Uid = info.Uid
+	header.Guid = info.Gid
+	header.Mode = header.Mode&^cpio.ModePerm | cpio.FileMode(info.Mode.Perm())
 }
 
 func fileInfoToCPIOHeader(info fs.FileInfo, header *cpio.Header) {

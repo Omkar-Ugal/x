@@ -22,5 +22,8 @@ func CreateEROFS(w io.WriterAt, fsys fs.FS, opts ...CreateOption) error {
 	if c.allRoot {
 		erofsOpts = append(erofsOpts, erofs.WithAllRoot(true))
 	}
+	if c.fileInfoMap != nil {
+		erofsOpts = append(erofsOpts, erofs.WithFileInfoMap(c.fileInfoMap))
+	}
 	return erofs.Create(w, fsys, erofsOpts...)
 }
