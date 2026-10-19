@@ -15,7 +15,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/tonistiigi/fsutil v0.0.0-20260819142231-83cac42c1c52
 	github.com/tonistiigi/go-csvvalue v0.0.0-20240814133006-030d3b2625d0
-	github.com/unikraft/go-archivefs v0.0.0-20260513151619-de2950d0a646
+	github.com/unikraft/go-archivefs v0.0.0-20261019091157-8981da32f72d
 	github.com/unikraft/go-cpio v0.0.0-20260415131742-4f1984ca41f3
 	golang.org/x/crypto v0.57.0
 	golang.org/x/mod v0.41.0
