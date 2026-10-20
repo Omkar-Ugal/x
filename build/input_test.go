@@ -71,8 +71,8 @@ func TestLoadBuildOptsDockerfileDirectory(t *testing.T) {
 	require.Equal(t, kraftfile.SourceTypeDockerfile, opts.Rootfs.Type)
 	require.Empty(t, opts.Rootfs.Dockerfile)
 	require.Empty(t, opts.Rootfs.Format, "format is chosen at build time")
-	require.Empty(t, opts.Runtime)
-	require.Empty(t, opts.Platform, "the caller sets the platforms")
+	require.Equal(t, DefaultRuntime, opts.Runtime)
+	require.Empty(t, opts.Platform, "the runtime gives the platforms")
 	require.Nil(t, opts.Cmd)
 	require.Empty(t, opts.Roms)
 }
@@ -85,6 +85,7 @@ func TestLoadBuildOptsDockerfilePath(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, dockerfile, opts.Rootfs.Path)
 	require.Equal(t, kraftfile.SourceTypeDockerfile, opts.Rootfs.Type)
+	require.Equal(t, DefaultRuntime, opts.Runtime)
 }
 
 func TestLoadBuildOptsCustomDockerfilePath(t *testing.T) {

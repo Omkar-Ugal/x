@@ -22,6 +22,10 @@ import (
 // Kraftfile must contain to be built.
 const defaultDockerfileName = "Dockerfile"
 
+// DefaultRuntime is the runtime of a project that has a Dockerfile and no
+// Kraftfile.
+const DefaultRuntime = "base-compat:latest"
+
 // LoadBuildOpts resolves path to a Kraftfile or a Dockerfile and returns the
 // build options. Path is a project directory, a Kraftfile, or a Dockerfile.
 func LoadBuildOpts(ctx context.Context, path string) (BuildOpts, error) {
@@ -41,6 +45,7 @@ func LoadBuildOpts(ctx context.Context, path string) (BuildOpts, error) {
 				Path: path,
 				Type: kraftfile.SourceTypeDockerfile,
 			},
+			Runtime: DefaultRuntime,
 		}, nil
 	}
 
@@ -54,6 +59,7 @@ func LoadBuildOpts(ctx context.Context, path string) (BuildOpts, error) {
 					Path: dockerfilePath,
 					Type: kraftfile.SourceTypeDockerfile,
 				},
+				Runtime: DefaultRuntime,
 			}, nil
 		}
 		return BuildOpts{}, fmt.Errorf("no Kraftfile or %s found in %q", defaultDockerfileName, path)
