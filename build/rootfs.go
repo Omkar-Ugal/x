@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/containerd/platforms"
+	distref "github.com/distribution/reference"
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/exporter/containerimage/exptypes"
@@ -194,11 +195,13 @@ func (b Builder) buildRoms(ctx context.Context, opts BuildOpts) (_ [][]imagespec
 	for i, rom := range opts.Roms {
 		romBuildOpts := BuildOpts{
 			Rootfs: FSOpts{
-				Source: rom.Source,
-				Path:   rom.Path,
-				Type:   rom.Type,
-				Format: cmp.Or(rom.Format, kraftfile.FsTypeErofs),
-				Pad:    rom.Pad,
+				Source:           rom.Source,
+				Path:             rom.Path,
+				Type:             rom.Type,
+				Dockerfile:       rom.Dockerfile,
+				DockerfileSource: rom.DockerfileSource,
+				Format:           cmp.Or(rom.Format, kraftfile.FsTypeErofs),
+				Pad:              rom.Pad,
 			},
 			// propagate BuildKit options from the parent build
 			Platform: opts.Platform,
@@ -206,6 +209,7 @@ func (b Builder) buildRoms(ctx context.Context, opts BuildOpts) (_ [][]imagespec
 			Target:   opts.Target,
 			Secrets:  opts.Secrets,
 			SSH:      opts.SSH,
+			Contexts: opts.Contexts,
 			NoCache:  opts.NoCache,
 		}
 
@@ -950,16 +954,18 @@ func padFile(f *os.File, pad int64) error {
 }
 
 func applyBuildOpts(attrs map[string]string, localDirs map[string]string, inputs map[string]llb.State, sessions *[]session.Attachable, opts BuildOpts) error {
-	// The frontend reads the Dockerfile from the full state, and the context
-	// from its directory in the state.
+	// The frontend reads the Dockerfile from the full state or from its own
+	// source, and the context from its directory in the state.
 	if c, ok := opts.Rootfs.Source.(StateSource); ok {
-		dir, filename := path.Dir(opts.Rootfs.Path), opts.Rootfs.Path
-		if opts.Rootfs.Dockerfile != "" {
+		dir, filename, dockerfile := path.Dir(opts.Rootfs.Path), opts.Rootfs.Path, c.State
+		if d, ok := opts.Rootfs.DockerfileSource.(StateSource); ok {
+			dir, filename, dockerfile = opts.Rootfs.Path, opts.Rootfs.Dockerfile, d.State
+		} else if opts.Rootfs.Dockerfile != "" {
 			dir, filename = opts.Rootfs.Path, path.Join(opts.Rootfs.Path, opts.Rootfs.Dockerfile)
 		}
 		attrs["filename"] = filename
 		inputs["context"] = subdir(c.State, dir)
-		inputs["dockerfile"] = c.State
+		inputs["dockerfile"] = dockerfile
 	} else if opts.Rootfs.Dockerfile != "" {
 		localDirs["context"] = opts.Rootfs.Path
 		localDirs["dockerfile"] = filepath.Join(opts.Rootfs.Path, filepath.Dir(opts.Rootfs.Dockerfile))
@@ -977,6 +983,26 @@ func applyBuildOpts(attrs map[string]string, localDirs map[string]string, inputs
 		attrs["no-cache"] = ""
 	}
 
+	for name, src := range opts.Contexts {
+		name, err := contextName(name)
+		if err != nil {
+			return err
+		}
+		if _, ok := attrs["context:"+name]; ok {
+			return fmt.Errorf("two contexts have the name %q", name)
+		}
+		switch src := src.(type) {
+		case StateSource:
+			inputs[name] = src.State
+			attrs["context:"+name] = "input:" + name
+		case LocalSource:
+			localDirs[name] = src.Dir
+			attrs["context:"+name] = "local:" + name
+		default:
+			return fmt.Errorf("unsupported source %T of context %q", src, name)
+		}
+	}
+
 	for _, buildArg := range opts.BuildArg {
 		if buildArg == "" {
 			continue
@@ -992,6 +1018,21 @@ func applyBuildOpts(attrs map[string]string, localDirs map[string]string, inputs
 	}
 
 	return addBuildSessions(sessions, opts)
+}
+
+// contextName returns name as the frontend finds a context: the familiar
+// name of an image reference without the latest tag, as buildx gives it.
+func contextName(name string) (string, error) {
+	named, err := distref.ParseNormalizedNamed(name)
+	if err != nil {
+		return "", fmt.Errorf("invalid context name %q: %w", name, err)
+	}
+	familiar := strings.TrimSuffix(distref.FamiliarString(named), ":latest")
+	// The context and dockerfile names are the frontend's own inputs.
+	if familiar == "context" || familiar == "dockerfile" {
+		return "", fmt.Errorf("invalid context name %q", name)
+	}
+	return familiar, nil
 }
 
 // addBuildSessions adds the secret and SSH providers of opts to sessions.

@@ -27,6 +27,9 @@ func TestResolveSourceStateRejects(t *testing.T) {
 		{"absolute", FSOpts{Source: st, Path: "/rootfs"}, "must be relative"},
 		{"tarball", FSOpts{Source: st, Path: "rootfs.tar", Type: kraftfile.SourceTypeTarball}, "cannot come from an LLB state"},
 		{"pointer", FSOpts{Source: &st, Path: "rootfs"}, "unsupported source"},
+		{"dockerfile outside", FSOpts{Source: st, Path: "app", Dockerfile: "../Dockerfile", DockerfileSource: st}, "outside the source"},
+		{"dockerfile source without dockerfile", FSOpts{Source: st, Path: "app", Type: kraftfile.SourceTypeDockerfile, DockerfileSource: st}, "needs a dockerfile"},
+		{"local dockerfile source", FSOpts{Source: st, Path: "app", Dockerfile: "Dockerfile", DockerfileSource: LocalSource{}}, "must both be LLB states"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.ErrorContains(t, resolveSource(&tc.src), tc.err)
@@ -71,6 +74,92 @@ func TestApplyBuildOptsStateSource(t *testing.T) {
 			got, err := inputs["context"].Marshal(t.Context())
 			require.NoError(t, err)
 			require.Equal(t, want.Def, got.Def)
+		})
+	}
+}
+
+func TestApplyBuildOptsDockerfileSource(t *testing.T) {
+	st := llb.Git("https://example.com/repo.git", "")
+	dockerfile := llb.Git("https://example.com/docker.git", "")
+	attrs := map[string]string{}
+	inputs := map[string]llb.State{}
+
+	err := applyBuildOpts(attrs, map[string]string{}, inputs, new([]session.Attachable), BuildOpts{Rootfs: FSOpts{
+		Source:           StateSource{State: st},
+		Path:             "app",
+		Dockerfile:       "Dockerfile.prod",
+		DockerfileSource: StateSource{State: dockerfile},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"filename": "Dockerfile.prod"}, attrs)
+	require.Equal(t, dockerfile.Output(), inputs["dockerfile"].Output())
+
+	want, err := subdir(st, "app").Marshal(t.Context())
+	require.NoError(t, err)
+	got, err := inputs["context"].Marshal(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, want.Def, got.Def)
+}
+
+func TestApplyBuildOptsContexts(t *testing.T) {
+	st := llb.Git("https://example.com/repo.git", "")
+	files := llb.Git("https://example.com/files.git", "")
+	rootfs := FSOpts{Source: StateSource{State: st}, Path: "Dockerfile"}
+
+	t.Run("state and local", func(t *testing.T) {
+		attrs := map[string]string{}
+		localDirs := map[string]string{}
+		inputs := map[string]llb.State{}
+
+		err := applyBuildOpts(attrs, localDirs, inputs, new([]session.Attachable), BuildOpts{
+			Rootfs: rootfs,
+			Contexts: map[string]Source{
+				"files": StateSource{State: files},
+				"base":  LocalSource{Dir: "/src/base"},
+			},
+		})
+		require.NoError(t, err)
+		require.Equal(t, "input:files", attrs["context:files"])
+		require.Equal(t, files.Output(), inputs["files"].Output())
+		require.Equal(t, "local:base", attrs["context:base"])
+		require.Equal(t, map[string]string{"base": "/src/base"}, localDirs)
+	})
+
+	t.Run("an image name is familiar, without the latest tag", func(t *testing.T) {
+		attrs := map[string]string{}
+		inputs := map[string]llb.State{}
+
+		err := applyBuildOpts(attrs, map[string]string{}, inputs, new([]session.Attachable), BuildOpts{
+			Rootfs: rootfs,
+			Contexts: map[string]Source{
+				"docker.io/library/alpine:latest": StateSource{State: files},
+				"ghcr.io/acme/base:v1":            StateSource{State: st},
+			},
+		})
+		require.NoError(t, err)
+		require.Equal(t, "input:alpine", attrs["context:alpine"])
+		require.Equal(t, files.Output(), inputs["alpine"].Output())
+		require.Equal(t, "input:ghcr.io/acme/base:v1", attrs["context:ghcr.io/acme/base:v1"])
+	})
+
+	t.Run("two names of one context", func(t *testing.T) {
+		err := applyBuildOpts(map[string]string{}, map[string]string{}, map[string]llb.State{}, new([]session.Attachable), BuildOpts{
+			Rootfs: rootfs,
+			Contexts: map[string]Source{
+				"alpine":        StateSource{State: files},
+				"alpine:latest": StateSource{State: st},
+			},
+		})
+		require.ErrorContains(t, err, "two contexts")
+	})
+
+	for _, name := range []string{"", "Build", "context", "dockerfile"} {
+		t.Run("invalid "+name, func(t *testing.T) {
+			err := applyBuildOpts(map[string]string{}, map[string]string{}, map[string]llb.State{}, new([]session.Attachable), BuildOpts{
+				Rootfs:   rootfs,
+				Contexts: map[string]Source{name: StateSource{State: files}},
+			})
+			require.ErrorContains(t, err, "invalid context name")
 		})
 	}
 }
