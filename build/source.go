@@ -38,6 +38,14 @@ func (LocalSource) isSource() {}
 
 func (StateSource) isSource() {}
 
+// join returns p as a host path, resolving a relative p in s.Dir.
+func (s LocalSource) join(p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(s.Dir, p)
+}
+
 // localize turns a LocalSource into a host path and rejects an unknown
 // Source. An OCI path names an image, thus it drops its Source.
 func localize(o *FSOpts) error {
@@ -52,8 +60,8 @@ func localize(o *FSOpts) error {
 	switch src := o.Source.(type) {
 	case nil, StateSource:
 	case LocalSource:
-		if src.Dir != "" && o.Type != kraftfile.SourceTypeOCI {
-			o.Path = filepath.Join(src.Dir, o.Path)
+		if o.Type != kraftfile.SourceTypeOCI {
+			o.Path = src.join(o.Path)
 		}
 		o.Source = nil
 	default:
