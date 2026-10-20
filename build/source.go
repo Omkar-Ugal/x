@@ -41,6 +41,14 @@ func (StateSource) isSource() {}
 // localize turns a LocalSource into a host path and rejects an unknown
 // Source. An OCI path names an image, thus it drops its Source.
 func localize(o *FSOpts) error {
+	if o.DockerfileSource != nil {
+		_, state := o.Source.(StateSource)
+		_, dockerfileState := o.DockerfileSource.(StateSource)
+		if !state || !dockerfileState {
+			return fmt.Errorf("a dockerfile source and its source must both be LLB states")
+		}
+	}
+
 	switch src := o.Source.(type) {
 	case nil, StateSource:
 	case LocalSource:
@@ -67,7 +75,15 @@ func resolveState(o *FSOpts) error {
 	}
 	o.Path = p
 
-	if o.Dockerfile != "" {
+	switch {
+	case o.DockerfileSource != nil:
+		if o.Dockerfile == "" {
+			return fmt.Errorf("a dockerfile source needs a dockerfile")
+		}
+		if _, err := cleanSourcePath(o.Dockerfile); err != nil {
+			return err
+		}
+	case o.Dockerfile != "":
 		if _, err := cleanSourcePath(path.Join(o.Path, o.Dockerfile)); err != nil {
 			return err
 		}

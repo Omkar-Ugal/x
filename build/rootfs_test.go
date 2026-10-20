@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/moby/buildkit/client/llb"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/require"
 	archivefs "github.com/unikraft/go-archivefs"
@@ -293,6 +294,24 @@ func TestRomPerPlatform(t *testing.T) {
 		require.NotNil(t, f, "no rom for platform %d", i)
 	}
 	require.NotSame(t, romFiles[0][0], romFiles[0][1])
+}
+
+// A rom reads its Dockerfile from its own Dockerfile source, thus the path of
+// the Dockerfile must stay inside that source.
+func TestRomDockerfileSource(t *testing.T) {
+	st := StateSource{State: llb.Scratch()}
+
+	_, err := Builder{}.buildRoms(t.Context(), BuildOpts{
+		Roms: []FSOpts{{
+			Source:           st,
+			Path:             "app",
+			Type:             kraftfile.SourceTypeDockerfile,
+			Dockerfile:       "../Dockerfile",
+			DockerfileSource: st,
+		}},
+		Platform: []ocispec.Platform{{OS: "fc", Architecture: "x86_64"}},
+	})
+	require.ErrorContains(t, err, "outside the source")
 }
 
 func TestApplyConfigOverrides(t *testing.T) {

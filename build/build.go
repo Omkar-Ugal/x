@@ -40,6 +40,9 @@ type BuildOpts struct {
 	Target   string
 	Secrets  []*buildflags.Secret
 	SSH      []*buildflags.SSH
+	// Contexts are the named contexts of a Dockerfile, for FROM <name> and
+	// COPY --from=<name>, by name.
+	Contexts map[string]Source
 
 	NoCache bool
 }
@@ -50,6 +53,9 @@ type FSOpts struct {
 	Path       string
 	Type       kraftfile.SourceType
 	Dockerfile string
+	// DockerfileSource holds the Dockerfile in place of Source, at the path
+	// Dockerfile. It and Source must both be a StateSource.
+	DockerfileSource Source
 
 	// Output params
 	Format   kraftfile.FsType
