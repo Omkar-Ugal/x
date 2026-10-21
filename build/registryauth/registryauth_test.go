@@ -32,7 +32,7 @@ import (
 const token = "YWxpY2U6czNjcmV0"
 
 func TestFromToken(t *testing.T) {
-	creds, err := registryauth.FromToken(token)
+	creds, err := registryauth.FromToken(token, "index.fra.unikraft.cloud")
 	require.NoError(t, err)
 
 	for _, tc := range []struct {
@@ -40,6 +40,7 @@ func TestFromToken(t *testing.T) {
 	}{
 		{"the registry gets the user and password", "index.unikraft.io", "alice", "s3cret"},
 		{"so does its short name", "unikraft.io", "alice", "s3cret"},
+		{"so does a host given with the token", "index.fra.unikraft.cloud", "alice", "s3cret"},
 		{"another registry gets nothing", "ghcr.io", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

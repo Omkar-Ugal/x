@@ -38,9 +38,10 @@ var registries = []string{"unikraft.io", "index.unikraft.io"}
 const sessionTimeout = 60 * time.Second
 
 // FromToken returns the credentials that a Unikraft Cloud token gives for
-// Unikraft Cloud's registry, index.unikraft.io. The token is the user and
-// password in base64, like the auth of a docker config.
-func FromToken(token string) (Credentials, error) {
+// Unikraft Cloud's registry, index.unikraft.io, and for the given hosts, such
+// as a metro's own registry. The token is the user and password in base64,
+// like the auth of a docker config.
+func FromToken(token string, hosts ...string) (Credentials, error) {
 	decoded, err := base64.StdEncoding.DecodeString(token)
 	if err != nil {
 		return nil, fmt.Errorf("token is not base64: %w", err)
@@ -50,8 +51,9 @@ func FromToken(token string) (Credentials, error) {
 		return nil, errors.New("token is not a user and password")
 	}
 
+	hosts = slices.Concat(registries, hosts)
 	return func(host string) (string, string, error) {
-		if slices.Contains(registries, host) {
+		if slices.Contains(hosts, host) {
 			return username, password, nil
 		}
 		return "", "", nil
