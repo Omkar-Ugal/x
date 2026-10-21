@@ -3,6 +3,7 @@ module unikraft.com/x/buildkit
 go 1.27.0
 
 require (
+	github.com/distribution/reference v0.6.0
 	github.com/moby/buildkit v0.31.1
 	github.com/moby/moby/client v0.6.0
 	github.com/stretchr/testify v1.12.1
@@ -23,7 +24,6 @@ require (
 	github.com/containerd/platforms v1.0.0-rc.4 // indirect
 	github.com/containerd/ttrpc v1.2.8 // indirect
 	github.com/containerd/typeurl/v2 v2.3.0 // indirect
-	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/cli v29.5.3+incompatible // indirect
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect

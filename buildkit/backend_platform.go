@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/distribution/reference"
 	"github.com/moby/buildkit/client"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -33,9 +34,14 @@ const (
 	readyTimeout = 2 * time.Minute
 )
 
-// ErrQuota is returned by Platform when the caller's account is over its
-// quota, thus the builder cannot be created or started.
-var ErrQuota = errors.New("builder quota exceeded")
+// The errors of Platform.
+var (
+	// ErrQuota is returned when the account's quota refuses the builder.
+	ErrQuota = errors.New("builder quota exceeded")
+
+	// ErrConflict is returned by Check when the builder exists with other sizes.
+	ErrConflict = errors.New("builder conflict")
+)
 
 // Platform runs builders as instances in the caller's Unikraft Cloud account.
 type Platform struct {
@@ -103,12 +109,12 @@ func NewPlatform(c platform.Client, opts ...Option) *Platform {
 // Acquire implements Backend. It creates the builder for key with a cache
 // volume if there is none, and starts it if it was stopped or in standby.
 func (p *Platform) Acquire(ctx context.Context, key Key) (*Daemon, error) {
-	name := "buildkit-" + cmp.Or(key.Name, "default")
+	name := instanceName(key)
 	// The builder may be booting, waking from standby or shutting down.
 	wctx, cancel := context.WithTimeout(ctx, readyTimeout)
 	defer cancel()
 
-	inst, err := p.instance(wctx, name)
+	inst, err := p.instance(wctx, name, key)
 	if err != nil {
 		return nil, err
 	}
@@ -137,15 +143,79 @@ func (p *Platform) Acquire(ctx context.Context, key Key) (*Daemon, error) {
 	return &Daemon{Client: c, Addr: addr, TLS: t, edge: edge}, nil
 }
 
+// Check returns ErrConflict if the builder for key exists, but not at key's sizes.
+func (p *Platform) Check(ctx context.Context, key Key) error {
+	if key.Image == "" && key.VCPUs == 0 && key.MemoryMB == 0 && key.CacheMB == 0 {
+		return nil
+	}
+	name := instanceName(key)
+	inst, err := p.get(ctx, name)
+	if err != nil || inst == nil {
+		return err
+	}
+
+	switch {
+	case key.VCPUs != 0 && int64(inst.Vcpus) != int64(key.VCPUs):
+		return fmt.Errorf("%w: builder %s has %d vcpus, not %d", ErrConflict, name, inst.Vcpus, key.VCPUs)
+	case key.MemoryMB != 0 && inst.MemoryMb != uint64(key.MemoryMB):
+		return fmt.Errorf("%w: builder %s has %d MiB of memory, not %d", ErrConflict, name, inst.MemoryMb, key.MemoryMB)
+	case key.Image != "" && !sameImage(inst.Image, key.Image):
+		return fmt.Errorf("%w: builder %s runs %s, not %s", ErrConflict, name, inst.Image, key.Image)
+	case key.CacheMB == 0:
+		return nil
+	}
+
+	vol := name + "-cache"
+	resp, err := p.c.GetVolumes(ctx, []platform.NameOrUUID{{Name: &vol}}, platform.GetVolumesOpts{})
+	if platform.ErrorContainsOnly(err, platform.APIHTTPErrorNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("getting cache volume %s: %w", vol, err)
+	}
+	if resp.Data != nil && len(resp.Data.Volumes) > 0 && resp.Data.Volumes[0].SizeMb != key.CacheMB {
+		return fmt.Errorf("%w: cache volume %s is %d MiB, not %d", ErrConflict, vol, resp.Data.Volumes[0].SizeMb, key.CacheMB)
+	}
+	return nil
+}
+
+// sameImage compares the repository, and the tag or digest when both have one.
+func sameImage(have, want string) bool {
+	h, err := reference.ParseNormalizedNamed(have)
+	w, werr := reference.ParseNormalizedNamed(want)
+	if err != nil || werr != nil {
+		return have == want
+	}
+	if reference.Path(h) != reference.Path(w) {
+		return false
+	}
+	if ht, ok := h.(reference.Tagged); ok {
+		if wt, ok := w.(reference.Tagged); ok && ht.Tag() != wt.Tag() {
+			return false
+		}
+	}
+	if hd, ok := h.(reference.Digested); ok {
+		if wd, ok := w.(reference.Digested); ok && hd.Digest() != wd.Digest() {
+			return false
+		}
+	}
+	return true
+}
+
+// instanceName returns the name of the builder instance for key.
+func instanceName(key Key) string {
+	return "buildkit-" + cmp.Or(key.Name, "default")
+}
+
 // instance returns the named builder instance, creating it if there is none
 // and starting it if it was stopped.
-func (p *Platform) instance(ctx context.Context, name string) (*platform.Instance, error) {
+func (p *Platform) instance(ctx context.Context, name string, key Key) (*platform.Instance, error) {
 	inst, err := p.get(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 	if inst == nil {
-		cerr := p.create(ctx, name)
+		cerr := p.create(ctx, name, key)
 		// Look again either way, a concurrent Acquire may have created it.
 		if inst, err = p.get(ctx, name); inst == nil {
 			return nil, cmp.Or(cerr, err, fmt.Errorf("builder %s not found after creating it", name))
@@ -195,9 +265,10 @@ func (p *Platform) get(ctx context.Context, name string) (*platform.Instance, er
 
 // create creates the named builder instance and its cache volume, with
 // newly generated mTLS certificates and keys in its env.
-func (p *Platform) create(ctx context.Context, name string) error {
+func (p *Platform) create(ctx context.Context, name string, key Key) error {
 	vol := name + "-cache"
-	_, err := p.c.CreateVolume(ctx, platform.CreateVolumeRequest{Name: &vol, SizeMb: new(p.cacheMB), Filesystem: new("ext4")})
+	cacheMB := cmp.Or(key.CacheMB, p.cacheMB)
+	_, err := p.c.CreateVolume(ctx, platform.CreateVolumeRequest{Name: &vol, SizeMb: new(cacheMB), Filesystem: new("ext4")})
 	newVolume := err == nil
 	if err != nil && !platform.ErrorContainsOnly(err, platform.APIHTTPErrorAlreadyExists) {
 		return fmt.Errorf("creating cache volume %s: %w", vol, quota(err))
@@ -207,12 +278,12 @@ func (p *Platform) create(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("generating certificates: %w", err)
 	}
-	env[EnvOCIWorkerGCKeepStorage] = gcKeepStorage(p.cacheMB)
+	env[EnvOCIWorkerGCKeepStorage] = gcKeepStorage(cacheMB)
 	_, err = p.c.CreateInstance(ctx, platform.CreateInstanceRequest{
 		Name:      &name,
-		Image:     platform.ImageReference(p.image),
-		Vcpus:     new(p.vcpus),
-		MemoryMb:  new(p.memoryMB),
+		Image:     platform.ImageReference(cmp.Or(key.Image, p.image)),
+		Vcpus:     new(cmp.Or(key.VCPUs, p.vcpus)),
+		MemoryMb:  new(cmp.Or(key.MemoryMB, p.memoryMB)),
 		Autostart: new(true),
 		Env:       env,
 		Volumes:   []platform.CreateInstanceRequestVolume{{Name: &vol, At: cacheDir}},
