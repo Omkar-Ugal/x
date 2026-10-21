@@ -11,6 +11,8 @@ import (
 	"io"
 
 	"github.com/moby/buildkit/client"
+	// Registers the error detail types buildkitd attaches to solve errors.
+	_ "github.com/moby/buildkit/solver/errdefs"
 	"github.com/moby/buildkit/util/progress/progressui"
 )
 
