@@ -34,6 +34,7 @@ use (
 	./text
 	./timeouts
 	./version
+	./volimport
 )
 
 // Common tools.
