@@ -164,6 +164,17 @@ func TestPlatformCheck(t *testing.T) {
 			answers: map[string]string{"GET /v1/instances": builder("official/utils/buildkit:v1")},
 			want:    "runs official/utils/buildkit:v1, not official/utils/buildkit:v2",
 		},
+		{
+			name:    "another registry is a conflict",
+			key:     Key{Name: "ci", Image: "registry-a.example/team/buildkit:v1"},
+			answers: map[string]string{"GET /v1/instances": builder("registry-b.example/team/buildkit:v1")},
+			want:    "runs registry-b.example/team/buildkit:v1, not registry-a.example/team/buildkit:v1",
+		},
+		{
+			name:    "the platform's own registry left out is no conflict",
+			key:     Key{Name: "ci", Image: "index.unikraft.io/official/utils/buildkit:latest"},
+			answers: map[string]string{"GET /v1/instances": builder(digest)},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -196,27 +196,42 @@ func (p *Platform) cache(ctx context.Context, name string, key Key) (uint64, err
 	return size, nil
 }
 
-// sameImage compares the repository, and the tag or digest when both have one.
+// sameImage reports whether have and want name the same image, comparing the
+// registry, tag and digest when both name one.
 func sameImage(have, want string) bool {
 	h, err := reference.ParseNormalizedNamed(have)
 	w, werr := reference.ParseNormalizedNamed(want)
 	if err != nil || werr != nil {
 		return have == want
 	}
-	if reference.Path(h) != reference.Path(w) {
+	hr, hn := imageParts(h)
+	wr, wn := imageParts(w)
+	if hr != wr {
 		return false
 	}
-	if ht, ok := h.(reference.Tagged); ok {
-		if wt, ok := w.(reference.Tagged); ok && ht.Tag() != wt.Tag() {
-			return false
-		}
-	}
-	if hd, ok := h.(reference.Digested); ok {
-		if wd, ok := w.(reference.Digested); ok && hd.Digest() != wd.Digest() {
+	for i := range hn {
+		if hn[i] != "" && wn[i] != "" && hn[i] != wn[i] {
 			return false
 		}
 	}
 	return true
+}
+
+// imageParts returns the repository of ref, and the registry, tag and digest
+// it names, empty for those it leaves out.
+func imageParts(ref reference.Named) (repo string, named [3]string) {
+	domain := reference.Domain(ref)
+	if domain == "docker.io" {
+		domain = "" // what a bare name implies
+	}
+	tag, digest := "", ""
+	if t, ok := ref.(reference.Tagged); ok {
+		tag = t.Tag()
+	}
+	if d, ok := ref.(reference.Digested); ok {
+		digest = d.Digest().String()
+	}
+	return reference.Path(ref), [3]string{domain, tag, digest}
 }
 
 // instance returns the named builder instance, creating it if there is none
