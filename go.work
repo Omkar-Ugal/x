@@ -32,9 +32,7 @@ use (
 	./stdio
 	./telemetry
 	./text
-	./timeouts
 	./version
-	./volimport
 )
 
 // Common tools.
