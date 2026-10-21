@@ -39,7 +39,7 @@ var (
 	// ErrQuota is returned when the account's quota refuses the builder.
 	ErrQuota = errors.New("builder quota exceeded")
 
-	// ErrConflict is returned by Check when the builder exists with other sizes.
+	// ErrConflict is returned by Check and Acquire when the builder exists with other sizes.
 	ErrConflict = errors.New("builder conflict")
 )
 
@@ -109,7 +109,7 @@ func NewPlatform(c platform.Client, opts ...Option) *Platform {
 // Acquire implements Backend. It creates the builder for key with a cache
 // volume if there is none, and starts it if it was stopped or in standby.
 func (p *Platform) Acquire(ctx context.Context, key Key) (*Daemon, error) {
-	name := instanceName(key)
+	name := "buildkit-" + cmp.Or(key.Name, "default")
 	// The builder may be booting, waking from standby or shutting down.
 	wctx, cancel := context.WithTimeout(ctx, readyTimeout)
 	defer cancel()
@@ -148,12 +148,16 @@ func (p *Platform) Check(ctx context.Context, key Key) error {
 	if key.Image == "" && key.VCPUs == 0 && key.MemoryMB == 0 && key.CacheMB == 0 {
 		return nil
 	}
-	name := instanceName(key)
+	name := "buildkit-" + cmp.Or(key.Name, "default")
 	inst, err := p.get(ctx, name)
 	if err != nil || inst == nil {
 		return err
 	}
+	return p.conflict(ctx, name, inst, key)
+}
 
+// conflict returns ErrConflict if inst, the builder called name, or its cache volume is not at key's sizes.
+func (p *Platform) conflict(ctx context.Context, name string, inst *platform.Instance, key Key) error {
 	switch {
 	case key.VCPUs != 0 && int64(inst.Vcpus) != int64(key.VCPUs):
 		return fmt.Errorf("%w: builder %s has %d vcpus, not %d", ErrConflict, name, inst.Vcpus, key.VCPUs)
@@ -202,11 +206,6 @@ func sameImage(have, want string) bool {
 	return true
 }
 
-// instanceName returns the name of the builder instance for key.
-func instanceName(key Key) string {
-	return "buildkit-" + cmp.Or(key.Name, "default")
-}
-
 // instance returns the named builder instance, creating it if there is none
 // and starting it if it was stopped.
 func (p *Platform) instance(ctx context.Context, name string, key Key) (*platform.Instance, error) {
@@ -220,6 +219,9 @@ func (p *Platform) instance(ctx context.Context, name string, key Key) (*platfor
 		if inst, err = p.get(ctx, name); inst == nil {
 			return nil, cmp.Or(cerr, err, fmt.Errorf("builder %s not found after creating it", name))
 		}
+	}
+	if err := p.conflict(ctx, name, inst, key); err != nil {
+		return nil, err
 	}
 
 	// Unlike standby, shutting down refuses connections and stopped ignores them.
