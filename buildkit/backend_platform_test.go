@@ -119,6 +119,12 @@ func TestPlatformCheck(t *testing.T) {
 			answers: map[string]string{"GET /v1/instances": notFound},
 		},
 		{
+			name:    "a cache volume of another size is a conflict without its builder",
+			key:     Key{Name: "ci", CacheMB: 20480},
+			answers: map[string]string{"GET /v1/instances": notFound, "GET /v1/volumes": cache},
+			want:    "cache volume buildkit-ci-cache is 10240 MiB, not 20480",
+		},
+		{
 			name:    "a builder of the key's sizes is no conflict",
 			key:     Key{Name: "ci", Image: digest, VCPUs: 2, MemoryMB: 4096, CacheMB: 10240},
 			answers: map[string]string{"GET /v1/instances": builder(digest), "GET /v1/volumes": cache},
@@ -157,6 +163,17 @@ func TestPlatformCheck(t *testing.T) {
 			key:     Key{Name: "ci", Image: "official/utils/buildkit:v2"},
 			answers: map[string]string{"GET /v1/instances": builder("official/utils/buildkit:v1")},
 			want:    "runs official/utils/buildkit:v1, not official/utils/buildkit:v2",
+		},
+		{
+			name:    "another registry is a conflict",
+			key:     Key{Name: "ci", Image: "registry-a.example/team/buildkit:v1"},
+			answers: map[string]string{"GET /v1/instances": builder("registry-b.example/team/buildkit:v1")},
+			want:    "runs registry-b.example/team/buildkit:v1, not registry-a.example/team/buildkit:v1",
+		},
+		{
+			name:    "the platform's own registry left out is no conflict",
+			key:     Key{Name: "ci", Image: "index.unikraft.io/official/utils/buildkit:latest"},
+			answers: map[string]string{"GET /v1/instances": builder(digest)},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -234,4 +251,57 @@ func TestPlatformAcquireQuota(t *testing.T) {
 			assert.Equal(t, tc.deleted, deleted)
 		})
 	}
+}
+
+func TestPlatformAcquireConflict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/instances" {
+			_, _ = w.Write([]byte(`{"status": "success", "data": {"instances": [{"status": "success", "uuid": "u1", "name": "buildkit-ci", "state": "running", "vcpus": 2, "memory_mb": 4096}]}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status": "success"}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := platform.NewClient(platform.WithDefaultEndpoint(srv.URL), platform.WithToken("token"))
+
+	// The builder Acquire finds must be at the key's sizes, as for Check.
+	_, err := NewPlatform(c).Acquire(t.Context(), Key{Name: "ci", VCPUs: 4})
+	require.ErrorIs(t, err, ErrConflict)
+}
+
+func TestPlatformCreateExistingCache(t *testing.T) {
+	answers := map[string]string{
+		"POST /v1/volumes": fmt.Sprintf(`{"status": "error", "data": {"volumes": [{"status": "error", "message": "already exists", "error": %d}]}}`, platform.APIHTTPErrorAlreadyExists),
+		"GET /v1/volumes":  `{"status": "success", "data": {"volumes": [{"status": "success", "uuid": "v1", "name": "buildkit-ci-cache", "size_mb": 10240}]}}`,
+	}
+	newPlatform := func(t *testing.T) (*Platform, <-chan platform.CreateInstanceRequest) {
+		created := make(chan platform.CreateInstanceRequest, 1)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && r.URL.Path == "/v1/instances" {
+				var req platform.CreateInstanceRequest
+				assert.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+				created <- req
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(cmp.Or(answers[r.Method+" "+r.URL.Path], `{"status": "success"}`)))
+		}))
+		t.Cleanup(srv.Close)
+		return NewPlatform(platform.NewClient(platform.WithDefaultEndpoint(srv.URL), platform.WithToken("token"))), created
+	}
+
+	t.Run("a cache volume left behind sets the gc limits from its size", func(t *testing.T) {
+		p, created := newPlatform(t)
+		require.NoError(t, p.create(t.Context(), "buildkit-ci", Key{Name: "ci"}))
+
+		req := <-created
+		assert.Equal(t, "1073,5368,5368", req.Env[EnvOCIWorkerGCKeepStorage])
+	})
+
+	t.Run("a cache volume left behind at another size is a conflict", func(t *testing.T) {
+		p, created := newPlatform(t)
+		err := p.create(t.Context(), "buildkit-ci", Key{Name: "ci", CacheMB: 20480})
+		require.ErrorIs(t, err, ErrConflict)
+		assert.Empty(t, created)
+	})
 }

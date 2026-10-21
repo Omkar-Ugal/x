@@ -39,7 +39,7 @@ var (
 	// ErrQuota is returned when the account's quota refuses the builder.
 	ErrQuota = errors.New("builder quota exceeded")
 
-	// ErrConflict is returned by Check when the builder exists with other sizes.
+	// ErrConflict is returned by Check and Acquire when the builder exists with other sizes.
 	ErrConflict = errors.New("builder conflict")
 )
 
@@ -109,7 +109,7 @@ func NewPlatform(c platform.Client, opts ...Option) *Platform {
 // Acquire implements Backend. It creates the builder for key with a cache
 // volume if there is none, and starts it if it was stopped or in standby.
 func (p *Platform) Acquire(ctx context.Context, key Key) (*Daemon, error) {
-	name := instanceName(key)
+	name := "buildkit-" + cmp.Or(key.Name, "default")
 	// The builder may be booting, waking from standby or shutting down.
 	wctx, cancel := context.WithTimeout(ctx, readyTimeout)
 	defer cancel()
@@ -148,63 +148,90 @@ func (p *Platform) Check(ctx context.Context, key Key) error {
 	if key.Image == "" && key.VCPUs == 0 && key.MemoryMB == 0 && key.CacheMB == 0 {
 		return nil
 	}
-	name := instanceName(key)
+	name := "buildkit-" + cmp.Or(key.Name, "default")
 	inst, err := p.get(ctx, name)
-	if err != nil || inst == nil {
+	if err != nil {
 		return err
 	}
+	return p.conflict(ctx, name, inst, key)
+}
 
-	switch {
-	case key.VCPUs != 0 && int64(inst.Vcpus) != int64(key.VCPUs):
-		return fmt.Errorf("%w: builder %s has %d vcpus, not %d", ErrConflict, name, inst.Vcpus, key.VCPUs)
-	case key.MemoryMB != 0 && inst.MemoryMb != uint64(key.MemoryMB):
-		return fmt.Errorf("%w: builder %s has %d MiB of memory, not %d", ErrConflict, name, inst.MemoryMb, key.MemoryMB)
-	case key.Image != "" && !sameImage(inst.Image, key.Image):
-		return fmt.Errorf("%w: builder %s runs %s, not %s", ErrConflict, name, inst.Image, key.Image)
-	case key.CacheMB == 0:
+// conflict returns ErrConflict if inst, if any, or the cache volume of name is not at key's sizes.
+func (p *Platform) conflict(ctx context.Context, name string, inst *platform.Instance, key Key) error {
+	if inst != nil {
+		switch {
+		case key.VCPUs != 0 && int64(inst.Vcpus) != int64(key.VCPUs):
+			return fmt.Errorf("%w: builder %s has %d vcpus, not %d", ErrConflict, name, inst.Vcpus, key.VCPUs)
+		case key.MemoryMB != 0 && inst.MemoryMb != uint64(key.MemoryMB):
+			return fmt.Errorf("%w: builder %s has %d MiB of memory, not %d", ErrConflict, name, inst.MemoryMb, key.MemoryMB)
+		case key.Image != "" && !sameImage(inst.Image, key.Image):
+			return fmt.Errorf("%w: builder %s runs %s, not %s", ErrConflict, name, inst.Image, key.Image)
+		}
+	}
+	if key.CacheMB == 0 {
 		return nil
 	}
+	_, err := p.cache(ctx, name, key)
+	return err
+}
 
+// cache returns the size of the cache volume of name, 0 without one, and
+// ErrConflict if key sizes it otherwise.
+func (p *Platform) cache(ctx context.Context, name string, key Key) (uint64, error) {
 	vol := name + "-cache"
 	resp, err := p.c.GetVolumes(ctx, []platform.NameOrUUID{{Name: &vol}}, platform.GetVolumesOpts{})
 	if platform.ErrorContainsOnly(err, platform.APIHTTPErrorNotFound) {
-		return nil
+		return 0, nil
 	}
 	if err != nil {
-		return fmt.Errorf("getting cache volume %s: %w", vol, err)
+		return 0, fmt.Errorf("getting cache volume %s: %w", vol, err)
 	}
-	if resp.Data != nil && len(resp.Data.Volumes) > 0 && resp.Data.Volumes[0].SizeMb != key.CacheMB {
-		return fmt.Errorf("%w: cache volume %s is %d MiB, not %d", ErrConflict, vol, resp.Data.Volumes[0].SizeMb, key.CacheMB)
+	if resp.Data == nil || len(resp.Data.Volumes) == 0 {
+		return 0, nil
 	}
-	return nil
+	size := resp.Data.Volumes[0].SizeMb
+	if key.CacheMB != 0 && size != key.CacheMB {
+		return size, fmt.Errorf("%w: cache volume %s is %d MiB, not %d", ErrConflict, vol, size, key.CacheMB)
+	}
+	return size, nil
 }
 
-// sameImage compares the repository, and the tag or digest when both have one.
+// sameImage reports whether have and want name the same image, comparing the
+// registry, tag and digest when both name one.
 func sameImage(have, want string) bool {
 	h, err := reference.ParseNormalizedNamed(have)
 	w, werr := reference.ParseNormalizedNamed(want)
 	if err != nil || werr != nil {
 		return have == want
 	}
-	if reference.Path(h) != reference.Path(w) {
+	hr, hn := imageParts(h)
+	wr, wn := imageParts(w)
+	if hr != wr {
 		return false
 	}
-	if ht, ok := h.(reference.Tagged); ok {
-		if wt, ok := w.(reference.Tagged); ok && ht.Tag() != wt.Tag() {
-			return false
-		}
-	}
-	if hd, ok := h.(reference.Digested); ok {
-		if wd, ok := w.(reference.Digested); ok && hd.Digest() != wd.Digest() {
+	for i := range hn {
+		if hn[i] != "" && wn[i] != "" && hn[i] != wn[i] {
 			return false
 		}
 	}
 	return true
 }
 
-// instanceName returns the name of the builder instance for key.
-func instanceName(key Key) string {
-	return "buildkit-" + cmp.Or(key.Name, "default")
+// imageParts returns the repository of ref, and the registry, tag and digest
+// it names, empty for those it leaves out.
+func imageParts(ref reference.Named) (repo string, named [3]string) {
+	domain := reference.Domain(ref)
+	if domain == "docker.io" {
+		domain = "" // what a bare name implies
+	}
+	tag, digest := "", ""
+	if t, ok := ref.(reference.Tagged); ok {
+		tag = t.Tag()
+	}
+	if d, ok := ref.(reference.Digested); ok {
+		digest = d.Digest().String()
+	}
+	return reference.Path(ref), [3]string{domain, tag, digest}
 }
 
 // instance returns the named builder instance, creating it if there is none
@@ -220,6 +247,9 @@ func (p *Platform) instance(ctx context.Context, name string, key Key) (*platfor
 		if inst, err = p.get(ctx, name); inst == nil {
 			return nil, cmp.Or(cerr, err, fmt.Errorf("builder %s not found after creating it", name))
 		}
+	}
+	if err := p.conflict(ctx, name, inst, key); err != nil {
+		return nil, err
 	}
 
 	// Unlike standby, shutting down refuses connections and stopped ignores them.
@@ -270,7 +300,15 @@ func (p *Platform) create(ctx context.Context, name string, key Key) error {
 	cacheMB := cmp.Or(key.CacheMB, p.cacheMB)
 	_, err := p.c.CreateVolume(ctx, platform.CreateVolumeRequest{Name: &vol, SizeMb: new(cacheMB), Filesystem: new("ext4")})
 	newVolume := err == nil
-	if err != nil && !platform.ErrorContainsOnly(err, platform.APIHTTPErrorAlreadyExists) {
+	switch {
+	case platform.ErrorContainsOnly(err, platform.APIHTTPErrorAlreadyExists):
+		// Left behind by a failed create: the gc limits must fit its size.
+		size, err := p.cache(ctx, name, key)
+		if err != nil {
+			return err
+		}
+		cacheMB = cmp.Or(size, cacheMB)
+	case err != nil:
 		return fmt.Errorf("creating cache volume %s: %w", vol, quota(err))
 	}
 
