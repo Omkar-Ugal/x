@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"sync/atomic"
 	"testing"
 
 	"github.com/containerd/containerd/v2/core/content"
@@ -217,4 +218,52 @@ func TestSaveContentVerifiesWhatItCopies(t *testing.T) {
 	require.NoError(t, err)
 	_, err = SaveContent(t.Context(), unchecked{dst}, "latest", &img)
 	require.ErrorIs(t, err, ErrDigestMismatch)
+}
+
+// resetting is an ingester whose writers reset once at commit, as a pusher
+// does when it re-sends an upload.
+type resetting struct {
+	content.Ingester
+	resets atomic.Int32
+}
+
+func (i *resetting) Writer(ctx context.Context, opts ...content.WriterOpt) (content.Writer, error) {
+	w, err := i.Ingester.Writer(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &resettingWriter{Writer: w, resets: &i.resets}, nil
+}
+
+type resettingWriter struct {
+	content.Writer
+	reset  bool
+	resets *atomic.Int32
+}
+
+func (w *resettingWriter) Commit(ctx context.Context, size int64, expected digest.Digest, opts ...content.Opt) error {
+	if w.reset {
+		return w.Writer.Commit(ctx, size, expected, opts...)
+	}
+	w.reset = true
+	w.resets.Add(1)
+	if err := w.Truncate(0); err != nil {
+		return err
+	}
+
+	return content.ErrReset
+}
+
+func TestSaveContentWritesAgainAfterReset(t *testing.T) {
+	t.Parallel()
+
+	dst, err := local.NewStore(t.TempDir())
+	require.NoError(t, err)
+	store := &resetting{Ingester: dst}
+
+	// The store checks each digest on commit, so a layer written again wrong fails.
+	_, err = SaveContent(t.Context(), store, "latest", testImage)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, store.resets.Load(), int32(3)) // the three layers at least
 }

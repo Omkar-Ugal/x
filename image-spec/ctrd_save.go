@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -281,6 +282,9 @@ func packageCopy(ctx context.Context, store content.Ingester, image *Image, inpu
 	return desc, nil
 }
 
+// maxResets bounds the writes again after a reset: containerd re-sends at most that often.
+const maxResets = 4
+
 func packageLayer(ctx context.Context, store content.Ingester, image *Image, file File, mediaType string, path string) (_ ocispec.Descriptor, rerr error) {
 	if desc, provider := file.Source(); desc.Digest != "" && store != nil {
 		// if we have a source descriptor and provider, copy directly
@@ -307,26 +311,33 @@ func packageLayer(ctx context.Context, store content.Ingester, image *Image, fil
 
 	var reader io.Reader
 
+	// rewind takes reader back to its start for another write.
+	rewind := func() error {
+		if seeker, ok := reader.(io.Seeker); ok {
+			if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+				return fmt.Errorf("failed to rewind layer content: %w", err)
+			}
+			return nil
+		}
+		if err := r.Close(); err != nil {
+			return err
+		}
+		r = nil
+		var err error
+		r, _, err = file.Open(ctx)
+		reader = r
+		return err
+	}
+
 	if path == "" {
 		_, err = io.Copy(digester.Hash(), r)
 		if err != nil {
 			return ocispec.Descriptor{}, fmt.Errorf("failed to buffer layer content: %w", err)
 		}
-		if seeker, ok := r.(io.Seeker); ok {
-			if _, err := seeker.Seek(0, io.SeekStart); err != nil {
-				return ocispec.Descriptor{}, fmt.Errorf("failed to rewind layer content: %w", err)
-			}
-		} else {
-			if err := r.Close(); err != nil {
-				return ocispec.Descriptor{}, err
-			}
-			r = nil
-			r, _, err = file.Open(ctx)
-			if err != nil {
-				return ocispec.Descriptor{}, err
-			}
-		}
 		reader = r
+		if err := rewind(); err != nil {
+			return ocispec.Descriptor{}, err
+		}
 	} else {
 		tmp, err := os.CreateTemp("", "imagespec-layer-*")
 		if err != nil {
@@ -394,12 +405,26 @@ func packageLayer(ctx context.Context, store content.Ingester, image *Image, fil
 		}
 	}()
 
-	_, err = io.Copy(w, reader)
-	if err != nil {
-		return ocispec.Descriptor{}, fmt.Errorf("failed to buffer layer content: %w", err)
+	// A registry pusher resets its writer when it re-sends the upload, so
+	// start over, as content.Copy does.
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			if err := rewind(); err != nil {
+				return ocispec.Descriptor{}, err
+			}
+		}
+		_, err = io.Copy(w, reader)
+		if errors.Is(err, content.ErrReset) && attempt < maxResets {
+			continue
+		}
+		if err != nil {
+			return ocispec.Descriptor{}, fmt.Errorf("failed to buffer layer content: %w", err)
+		}
+		err = w.Commit(ctx, desc.Size, desc.Digest)
+		if !errors.Is(err, content.ErrReset) || attempt == maxResets {
+			break
+		}
 	}
-
-	err = w.Commit(ctx, desc.Size, desc.Digest)
 	if err == nil {
 		log.G(ctx).Debug().
 			Str("mediaType", mediaType).
