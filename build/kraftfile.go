@@ -102,8 +102,8 @@ func kraftfileKernel(kf *kraftfile.Kraftfile, src Source) (string, error) {
 		case nil:
 		case LocalSource:
 			path = src.join(path)
-		case StateSource:
-			return "", fmt.Errorf("kernel cannot come from an LLB state")
+		case StateSource, SessionSource:
+			return "", fmt.Errorf("kernel cannot come from %s", sourceKind(src))
 		default:
 			return "", fmt.Errorf("unsupported source %T", src)
 		}

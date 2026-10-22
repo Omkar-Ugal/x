@@ -154,7 +154,7 @@ func resolveSource(fsOpts *FSOpts) error {
 	}
 
 	// BuildKit cannot stat a path in LLB, thus only the name selects the type.
-	if _, ok := fsOpts.Source.(StateSource); ok {
+	if fromLLB(fsOpts.Source) {
 		if fsOpts.Type == "" {
 			fsOpts.Type = kraftfile.SourceTypeDirectory
 			if isDockerfile(path.Base(fsOpts.Path)) {
@@ -249,7 +249,7 @@ func (b Builder) buildRootfs(ctx context.Context, opts BuildOpts, part string) (
 	if err := localize(&opts.Rootfs); err != nil {
 		return nil, err
 	}
-	_, fromState := opts.Rootfs.Source.(StateSource)
+	fromState := fromLLB(opts.Rootfs.Source)
 	if fromState {
 		if err := resolveState(&opts.Rootfs); err != nil {
 			return nil, err
@@ -354,7 +354,7 @@ func (b Builder) buildRootfsDirectory(ctx context.Context, opts BuildOpts, part 
 	return b.packRootfs(ctx, opts, part, srcFS)
 }
 
-// buildRootfsDirectoryState packages a directory of a StateSource for each
+// buildRootfsDirectoryState packages an LLB source directory for each
 // platform. The state can depend on the platform, thus each one has a solve.
 func (b Builder) buildRootfsDirectoryState(ctx context.Context, opts BuildOpts, part string) (_ []*imagespec.Image, rerr error) {
 	s, err := b.newSolver(ctx)
@@ -388,11 +388,11 @@ func (b Builder) buildRootfsDirectoryState(ctx context.Context, opts BuildOpts, 
 	return imgs, nil
 }
 
-// packDirectoryState solves a directory of a StateSource on the one platform
-// of opts, and packages it, reporting both as steps of part.
+// packDirectoryState solves a directory of a StateSource or a SessionSource on
+// the one platform of opts, and packages it, reporting both as steps of part.
 func (b Builder) packDirectoryState(ctx context.Context, s *solver, opts BuildOpts, part string) ([]*imagespec.Image, error) {
-	st := opts.Rootfs.Source.(StateSource).State
 	dir := opts.Rootfs.Path
+	st := sourceState(opts.Rootfs.Source, []string{dir})
 	ep := getPlatform(opts.Platform[0])
 
 	def, err := marshalState(ctx, st, ep.Platform, opts.NoCache)
@@ -950,16 +950,22 @@ func padFile(f *os.File, pad int64) error {
 func applyBuildOpts(attrs map[string]string, localDirs map[string]string, inputs map[string]llb.State, sessions *[]session.Attachable, opts BuildOpts) error {
 	// The frontend reads the Dockerfile from the full state or from its own
 	// source, and the context from its directory in the state.
-	if c, ok := opts.Rootfs.Source.(StateSource); ok {
-		dir, filename, dockerfile := path.Dir(opts.Rootfs.Path), opts.Rootfs.Path, c.State
-		if d, ok := opts.Rootfs.DockerfileSource.(StateSource); ok {
-			dir, filename, dockerfile = opts.Rootfs.Path, opts.Rootfs.Dockerfile, d.State
+	if fromLLB(opts.Rootfs.Source) {
+		dir, filename, dockerfile := path.Dir(opts.Rootfs.Path), opts.Rootfs.Path, opts.Rootfs.Source
+		if opts.Rootfs.DockerfileSource != nil {
+			dir, filename, dockerfile = opts.Rootfs.Path, opts.Rootfs.Dockerfile, opts.Rootfs.DockerfileSource
 		} else if opts.Rootfs.Dockerfile != "" {
 			dir, filename = opts.Rootfs.Path, path.Join(opts.Rootfs.Path, opts.Rootfs.Dockerfile)
 		}
 		attrs["filename"] = filename
-		inputs["context"] = subdir(c.State, dir)
-		inputs["dockerfile"] = dockerfile
+		// Send all of the Dockerfile on each sync, as the frontend does, because
+		// the metadata of a changed file can stay the same.
+		inputs["dockerfile"] = sourceState(dockerfile, []string{filename, filename + ".dockerignore"}, llb.Differ(llb.DiffNone, false))
+		// Without an input, the frontend reads the local "context" and
+		// applies its .dockerignore.
+		if src, ok := opts.Rootfs.Source.(SessionSource); !ok || src.Name != "context" || dir != "." {
+			inputs["context"] = subdir(sourceState(opts.Rootfs.Source, []string{dir}), dir)
+		}
 	} else if opts.Rootfs.Dockerfile != "" {
 		localDirs["context"] = opts.Rootfs.Path
 		localDirs["dockerfile"] = filepath.Join(opts.Rootfs.Path, filepath.Dir(opts.Rootfs.Dockerfile))
@@ -992,9 +998,20 @@ func applyBuildOpts(attrs map[string]string, localDirs map[string]string, inputs
 		case LocalSource:
 			localDirs[name] = src.Dir
 			attrs["context:"+name] = "local:" + name
+		case SessionSource:
+			if src.Name == "" {
+				return fmt.Errorf("the session source of context %q needs a name", name)
+			}
+			attrs["context:"+name] = "local:" + src.Name
 		default:
 			return fmt.Errorf("unsupported source %T of context %q", src, name)
 		}
+	}
+
+	// The local directories add a second filesync to the session, and gRPC
+	// exits the process when a service registers two times.
+	if len(localDirs) > 0 && hasSession(opts) {
+		return fmt.Errorf("a Dockerfile and its contexts cannot mix local and session sources")
 	}
 
 	for _, buildArg := range opts.BuildArg {

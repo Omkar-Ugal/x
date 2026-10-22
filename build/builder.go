@@ -28,8 +28,8 @@ type Builder struct {
 	// calls cleanup, which can be nil, and does not close the client.
 	Buildkit func(ctx context.Context) (*client.Client, func(), error)
 
-	// Session gives the attachables for each solve, such as registry auth. When
-	// it is nil, BuildKit pulls images without credentials.
+	// Session gives the attachables of each solve, such as registry auth, but no
+	// FileSync when a source is local. When nil, BuildKit pulls without credentials.
 	Session func(ctx context.Context) ([]session.Attachable, error)
 
 	// Progress takes every step of the build as a buildkit SolveStatus,

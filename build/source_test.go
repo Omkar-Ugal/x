@@ -30,6 +30,9 @@ func TestResolveSourceStateRejects(t *testing.T) {
 		{"dockerfile outside", FSOpts{Source: st, Path: "app", Dockerfile: "../Dockerfile", DockerfileSource: st}, "outside the source"},
 		{"dockerfile source without dockerfile", FSOpts{Source: st, Path: "app", Type: kraftfile.SourceTypeDockerfile, DockerfileSource: st}, "needs a dockerfile"},
 		{"local dockerfile source", FSOpts{Source: st, Path: "app", Dockerfile: "Dockerfile", DockerfileSource: LocalSource{}}, "must both be LLB states"},
+		{"session tarball", FSOpts{Source: SessionSource{Name: "context"}, Path: "rootfs.tar", Type: kraftfile.SourceTypeTarball}, "cannot come from a session"},
+		{"session without name", FSOpts{Source: SessionSource{}, Path: "app"}, "needs a name"},
+		{"session pattern path", FSOpts{Source: SessionSource{Name: "context"}, Path: "files[1]"}, "cannot start with ! or contain"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.ErrorContains(t, resolveSource(&tc.src), tc.err)
@@ -101,6 +104,75 @@ func TestApplyBuildOptsDockerfileSource(t *testing.T) {
 	require.Equal(t, want.Def, got.Def)
 }
 
+func TestApplyBuildOptsSessionSource(t *testing.T) {
+	git := llb.Git("https://example.com/repo.git", "")
+
+	for _, tc := range []struct {
+		name       string
+		rootfs     FSOpts
+		filename   string
+		dockerfile llb.State
+		context    *llb.State // nil when the frontend reads its local context
+	}{
+		{
+			name:       "root of context",
+			rootfs:     FSOpts{Source: SessionSource{Name: "context"}, Path: "Dockerfile"},
+			filename:   "Dockerfile",
+			dockerfile: llb.Local("context", llb.FollowPaths([]string{"Dockerfile", "Dockerfile.dockerignore"}), llb.Differ(llb.DiffNone, false), llb.SharedKeyHint("context:Dockerfile:Dockerfile.dockerignore")),
+		},
+		{
+			name:       "root of another name",
+			rootfs:     FSOpts{Source: SessionSource{Name: "app"}, Path: "Dockerfile"},
+			filename:   "Dockerfile",
+			dockerfile: llb.Local("app", llb.FollowPaths([]string{"Dockerfile", "Dockerfile.dockerignore"}), llb.Differ(llb.DiffNone, false), llb.SharedKeyHint("app:Dockerfile:Dockerfile.dockerignore")),
+			context:    new(llb.Local("app", llb.SharedKeyHint("app:."))),
+		},
+		{
+			name:       "subdir",
+			rootfs:     FSOpts{Source: SessionSource{Name: "context"}, Path: "app/Dockerfile.prod"},
+			filename:   "app/Dockerfile.prod",
+			dockerfile: llb.Local("context", llb.FollowPaths([]string{"app/Dockerfile.prod", "app/Dockerfile.prod.dockerignore"}), llb.Differ(llb.DiffNone, false), llb.SharedKeyHint("context:app/Dockerfile.prod:app/Dockerfile.prod.dockerignore")),
+			context:    new(subdir(llb.Local("context", llb.FollowPaths([]string{"app"}), llb.SharedKeyHint("context:app")), "app")),
+		},
+		{
+			name:       "session dockerfile source",
+			rootfs:     FSOpts{Source: StateSource{State: git}, Path: "app", Dockerfile: "Dockerfile.prod", DockerfileSource: SessionSource{Name: "dockerfile"}},
+			filename:   "Dockerfile.prod",
+			dockerfile: llb.Local("dockerfile", llb.FollowPaths([]string{"Dockerfile.prod", "Dockerfile.prod.dockerignore"}), llb.Differ(llb.DiffNone, false), llb.SharedKeyHint("dockerfile:Dockerfile.prod:Dockerfile.prod.dockerignore")),
+			context:    new(subdir(git, "app")),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attrs := map[string]string{}
+			localDirs := map[string]string{}
+			inputs := map[string]llb.State{}
+
+			require.NoError(t, resolveSource(&tc.rootfs))
+			err := applyBuildOpts(attrs, localDirs, inputs, new([]session.Attachable), BuildOpts{Rootfs: tc.rootfs})
+			require.NoError(t, err)
+			require.Equal(t, map[string]string{"filename": tc.filename}, attrs)
+			require.Empty(t, localDirs)
+			requireSameState(t, tc.dockerfile, inputs["dockerfile"])
+			if tc.context == nil {
+				require.NotContains(t, inputs, "context")
+				return
+			}
+			requireSameState(t, *tc.context, inputs["context"])
+		})
+	}
+}
+
+// requireSameState asserts that want and got marshal to the same LLB. A local
+// source gets a random ID on each marshal, thus both use the same one.
+func requireSameState(t *testing.T, want, got llb.State) {
+	t.Helper()
+	wantDef, err := want.Marshal(t.Context(), llb.LocalUniqueID("test"))
+	require.NoError(t, err)
+	gotDef, err := got.Marshal(t.Context(), llb.LocalUniqueID("test"))
+	require.NoError(t, err)
+	require.Equal(t, wantDef.Def, gotDef.Def)
+}
+
 func TestApplyBuildOptsContexts(t *testing.T) {
 	st := llb.Git("https://example.com/repo.git", "")
 	files := llb.Git("https://example.com/files.git", "")
@@ -123,6 +195,40 @@ func TestApplyBuildOptsContexts(t *testing.T) {
 		require.Equal(t, files.Output(), inputs["files"].Output())
 		require.Equal(t, "local:base", attrs["context:base"])
 		require.Equal(t, map[string]string{"base": "/src/base"}, localDirs)
+	})
+
+	t.Run("session", func(t *testing.T) {
+		attrs := map[string]string{}
+		localDirs := map[string]string{}
+		inputs := map[string]llb.State{}
+
+		err := applyBuildOpts(attrs, localDirs, inputs, new([]session.Attachable), BuildOpts{
+			Rootfs:   rootfs,
+			Contexts: map[string]Source{"files": SessionSource{Name: "shared"}},
+		})
+		require.NoError(t, err)
+		require.Equal(t, "local:shared", attrs["context:files"])
+		require.Empty(t, localDirs)
+		require.NotContains(t, inputs, "files")
+	})
+
+	t.Run("local and session", func(t *testing.T) {
+		err := applyBuildOpts(map[string]string{}, map[string]string{}, map[string]llb.State{}, new([]session.Attachable), BuildOpts{
+			Rootfs: rootfs,
+			Contexts: map[string]Source{
+				"files": SessionSource{Name: "files"},
+				"base":  LocalSource{Dir: "/src/base"},
+			},
+		})
+		require.ErrorContains(t, err, "cannot mix local and session sources")
+	})
+
+	t.Run("session without name", func(t *testing.T) {
+		err := applyBuildOpts(map[string]string{}, map[string]string{}, map[string]llb.State{}, new([]session.Attachable), BuildOpts{
+			Rootfs:   rootfs,
+			Contexts: map[string]Source{"files": SessionSource{}},
+		})
+		require.ErrorContains(t, err, "needs a name")
 	})
 
 	t.Run("an image name is familiar, without the latest tag", func(t *testing.T) {
