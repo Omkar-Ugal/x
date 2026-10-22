@@ -32,6 +32,10 @@ type Builder struct {
 	// FileSync when a source is local. When nil, BuildKit pulls without credentials.
 	Session func(ctx context.Context) ([]session.Attachable, error)
 
+	// SharedKey is the shared key of each solve session. Give each caller directory
+	// its own key. A sync with a known key then sends only the changed files.
+	SharedKey string
+
 	// Progress takes every step of the build as a buildkit SolveStatus,
 	// the ones outside the daemon included. When it is nil, the build
 	// discards its progress.
