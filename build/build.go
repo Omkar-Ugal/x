@@ -62,7 +62,7 @@ type FSOpts struct {
 	Type       kraftfile.SourceType
 	Dockerfile string
 	// DockerfileSource holds the Dockerfile in place of Source, at the path
-	// Dockerfile. It and Source must both be a StateSource.
+	// Dockerfile. It and Source must both be a StateSource or a SessionSource.
 	DockerfileSource Source
 
 	// Output params

@@ -25,10 +25,11 @@ import (
 
 // solver holds one BuildKit connection for several solves.
 type solver struct {
-	client   *client.Client
-	cleanup  func()
-	session  []session.Attachable
-	progress progress.Writer
+	client    *client.Client
+	cleanup   func()
+	session   []session.Attachable
+	sharedKey string
+	progress  progress.Writer
 }
 
 func (b Builder) newSolver(ctx context.Context) (*solver, error) {
@@ -57,10 +58,11 @@ func (b Builder) newSolver(ctx context.Context) (*solver, error) {
 	}
 
 	return &solver{
-		client:   c,
-		cleanup:  cleanup,
-		session:  slices.Clone(attachables),
-		progress: b.progressWriter(),
+		client:    c,
+		cleanup:   cleanup,
+		session:   slices.Clone(attachables),
+		sharedKey: b.SharedKey,
+		progress:  b.progressWriter(),
 	}, nil
 }
 
@@ -76,6 +78,7 @@ func (s *solver) close() {
 func (s *solver) solveToTar(ctx context.Context, dst *os.File, prefix string, solveOpt client.SolveOpt, build gateway.BuildFunc) error {
 	solveOpt.Ref = identity.NewID()
 	solveOpt.Session = s.session
+	solveOpt.SharedKey = s.sharedKey
 	solveOpt.Exports = []client.ExportEntry{{
 		Type: client.ExporterTar,
 		Output: func(map[string]string) (io.WriteCloser, error) {

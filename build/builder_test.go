@@ -55,9 +55,9 @@ func TestRootfsDockerfileWithoutBuildkit(t *testing.T) {
 	require.ErrorContains(t, err, "no buildkit connector configured")
 }
 
-// TestBuildStateSourcesNeedBuildkit asserts that the sources in a
-// StateSource are not read from the host.
-func TestBuildStateSourcesNeedBuildkit(t *testing.T) {
+// TestBuildLLBSourcesNeedBuildkit asserts that the sources in a StateSource or
+// a SessionSource are not read from the host.
+func TestBuildLLBSourcesNeedBuildkit(t *testing.T) {
 	t.Chdir(writeTestDirectory(t))
 	st := StateSource{State: llb.Scratch()}
 
@@ -67,6 +67,9 @@ func TestBuildStateSourcesNeedBuildkit(t *testing.T) {
 		},
 		"dockerfile rootfs": {
 			Rootfs: FSOpts{Source: st, Path: "Dockerfile", Type: kraftfile.SourceTypeDockerfile},
+		},
+		"session dir rom": {
+			Roms: []FSOpts{{Source: SessionSource{Name: "context"}, Path: "subdir", Type: kraftfile.SourceTypeDirectory}},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

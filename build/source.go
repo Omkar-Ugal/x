@@ -8,8 +8,10 @@ package build
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/moby/buildkit/client/llb"
@@ -34,9 +36,50 @@ type StateSource struct {
 	State llb.State
 }
 
+// SessionSource is a directory with root owners that the session serves by Name.
+// A main Dockerfile context uses .dockerignore only at the root of "context".
+type SessionSource struct {
+	Name string
+}
+
 func (LocalSource) isSource() {}
 
 func (StateSource) isSource() {}
+
+func (SessionSource) isSource() {}
+
+// fromLLB reports whether BuildKit gets src as LLB, and not from the host.
+func fromLLB(src Source) bool {
+	switch src.(type) {
+	case StateSource, SessionSource:
+		return true
+	}
+	return false
+}
+
+// hasSession reports whether the rootfs of opts or one of its contexts is a
+// SessionSource.
+func hasSession(opts BuildOpts) bool {
+	srcs := append([]Source{opts.Rootfs.Source, opts.Rootfs.DockerfileSource}, slices.Collect(maps.Values(opts.Contexts))...)
+	return slices.ContainsFunc(srcs, func(src Source) bool {
+		_, ok := src.(SessionSource)
+		return ok
+	})
+}
+
+// sourceState returns the LLB of paths in src, which must come from LLB. A
+// SessionSource sends only paths with opts, and a shared key that no other sync uses.
+func sourceState(src Source, paths []string, opts ...llb.LocalOption) llb.State {
+	s, ok := src.(SessionSource)
+	if !ok {
+		return src.(StateSource).State
+	}
+	opts = append(opts, llb.SharedKeyHint(s.Name+":"+strings.Join(paths, ":")))
+	if !slices.Equal(paths, []string{"."}) {
+		opts = append(opts, llb.FollowPaths(paths))
+	}
+	return llb.Local(s.Name, opts...)
+}
 
 // join returns p as a host path, resolving a relative p in s.Dir.
 func (s LocalSource) join(p string) string {
@@ -49,16 +92,17 @@ func (s LocalSource) join(p string) string {
 // localize turns a LocalSource into a host path and rejects an unknown
 // Source. An OCI path names an image, thus it drops its Source.
 func localize(o *FSOpts) error {
-	if o.DockerfileSource != nil {
-		_, state := o.Source.(StateSource)
-		_, dockerfileState := o.DockerfileSource.(StateSource)
-		if !state || !dockerfileState {
-			return fmt.Errorf("a dockerfile source and its source must both be LLB states")
+	if o.DockerfileSource != nil && (!fromLLB(o.Source) || !fromLLB(o.DockerfileSource)) {
+		return fmt.Errorf("a dockerfile source and its source must both be LLB states or sessions")
+	}
+	for _, src := range []Source{o.Source, o.DockerfileSource} {
+		if s, ok := src.(SessionSource); ok && s.Name == "" {
+			return fmt.Errorf("a session source needs a name")
 		}
 	}
 
 	switch src := o.Source.(type) {
-	case nil, StateSource:
+	case nil, StateSource, SessionSource:
 	case LocalSource:
 		if o.Type != kraftfile.SourceTypeOCI {
 			o.Path = src.join(o.Path)
@@ -74,8 +118,8 @@ func localize(o *FSOpts) error {
 	return nil
 }
 
-// resolveState cleans the path in a StateSource and makes sure that its type
-// can come from LLB.
+// resolveState cleans the path in a StateSource or a SessionSource and makes
+// sure that its type can come from LLB.
 func resolveState(o *FSOpts) error {
 	p, err := cleanSourcePath(o.Path)
 	if err != nil {
@@ -96,16 +140,48 @@ func resolveState(o *FSOpts) error {
 			return err
 		}
 	}
+	if err := checkSessionPaths(o); err != nil {
+		return err
+	}
 
 	switch o.Type {
 	case kraftfile.SourceTypeDirectory, kraftfile.SourceTypeDockerfile:
 		return nil
 	}
-	return fmt.Errorf("source type %q cannot come from an LLB state", o.Type)
+	return fmt.Errorf("source type %q cannot come from %s", o.Type, sourceKind(o.Source))
 }
 
-// cleanSourcePath returns p as a clean path in a StateSource, with "." for
-// its root.
+// checkSessionPaths rejects a path that a session sends if it has a character
+// that BuildKit reads as a pattern.
+func checkSessionPaths(o *FSOpts) error {
+	var paths []string
+	if _, ok := o.Source.(SessionSource); ok {
+		paths = append(paths, o.Path)
+		if o.DockerfileSource == nil {
+			paths = append(paths, path.Join(o.Path, o.Dockerfile))
+		}
+	}
+	if _, ok := o.DockerfileSource.(SessionSource); ok {
+		paths = append(paths, path.Clean(o.Dockerfile))
+	}
+	for _, p := range paths {
+		if strings.ContainsAny(p, `*?[\`) || strings.HasPrefix(p, "!") {
+			return fmt.Errorf(`path %q in a session cannot start with ! or contain *, ?, [ or \`, p)
+		}
+	}
+	return nil
+}
+
+// sourceKind names the kind of src, which must come from LLB, for an error.
+func sourceKind(src Source) string {
+	if _, ok := src.(SessionSource); ok {
+		return "a session"
+	}
+	return "an LLB state"
+}
+
+// cleanSourcePath returns p as a clean path in a StateSource or a
+// SessionSource, with "." for its root.
 func cleanSourcePath(p string) (string, error) {
 	p = path.Clean(p)
 	switch {

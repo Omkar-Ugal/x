@@ -28,9 +28,13 @@ type Builder struct {
 	// calls cleanup, which can be nil, and does not close the client.
 	Buildkit func(ctx context.Context) (*client.Client, func(), error)
 
-	// Session gives the attachables for each solve, such as registry auth. When
-	// it is nil, BuildKit pulls images without credentials.
+	// Session gives the attachables of each solve, such as registry auth, but no
+	// FileSync when a source is local. When nil, BuildKit pulls without credentials.
 	Session func(ctx context.Context) ([]session.Attachable, error)
+
+	// SharedKey is the shared key of each solve session. Give each caller directory
+	// its own key. A sync with a known key then sends only the changed files.
+	SharedKey string
 
 	// Progress takes every step of the build as a buildkit SolveStatus,
 	// the ones outside the daemon included. When it is nil, the build

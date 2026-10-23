@@ -121,7 +121,7 @@ func TestKraftfileToBuildOptsAbsoluteSources(t *testing.T) {
 	require.Equal(t, romPath, opts.Roms[0].Path)
 }
 
-func TestKraftfileToBuildOptsStateSource(t *testing.T) {
+func TestKraftfileToBuildOptsLLBSources(t *testing.T) {
 	kf := &kraftfile.Kraftfile{
 		Rootfs: &kraftfile.FS{
 			Source: &kraftfile.FSSource{Path: "./app/Dockerfile"},
@@ -131,15 +131,22 @@ func TestKraftfileToBuildOptsStateSource(t *testing.T) {
 		},
 	}
 
-	opts, err := KraftfileBuildOpts(kf, StateSource{State: llb.Scratch()})
-	require.NoError(t, err)
-	require.IsType(t, StateSource{}, opts.Rootfs.Source)
-	require.Equal(t, "app/Dockerfile", opts.Rootfs.Path)
-	require.Equal(t, kraftfile.SourceTypeDockerfile, opts.Rootfs.Type)
-	require.Len(t, opts.Roms, 1)
-	require.IsType(t, StateSource{}, opts.Roms[0].Source)
-	require.Equal(t, "public", opts.Roms[0].Path)
-	require.Equal(t, kraftfile.SourceTypeDirectory, opts.Roms[0].Type)
+	for name, src := range map[string]Source{
+		"state":   StateSource{State: llb.Scratch()},
+		"session": SessionSource{Name: "context"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts, err := KraftfileBuildOpts(kf, src)
+			require.NoError(t, err)
+			require.IsType(t, src, opts.Rootfs.Source)
+			require.Equal(t, "app/Dockerfile", opts.Rootfs.Path)
+			require.Equal(t, kraftfile.SourceTypeDockerfile, opts.Rootfs.Type)
+			require.Len(t, opts.Roms, 1)
+			require.IsType(t, src, opts.Roms[0].Source)
+			require.Equal(t, "public", opts.Roms[0].Path)
+			require.Equal(t, kraftfile.SourceTypeDirectory, opts.Roms[0].Type)
+		})
+	}
 }
 
 // TestKraftfileToBuildOptsMissingSource asserts the fail-fast that resolving
@@ -439,6 +446,13 @@ func TestKraftfileBuildOptsKernelErrors(t *testing.T) {
 			},
 			src: StateSource{State: llb.Scratch()},
 			err: "kernel cannot come from an LLB state",
+		},
+		"session source": {
+			kf: &kraftfile.Kraftfile{
+				Kernel: &kraftfile.Kernel{Type: kraftfile.KernelTypeKernel, Source: "kernel"},
+			},
+			src: SessionSource{Name: "context"},
+			err: "kernel cannot come from a session",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
