@@ -80,7 +80,7 @@ func WithCacheSize(mb uint64) Option {
 }
 
 // WithCooldown sets how long new builders stay idle before they scale to zero,
-// 5 minutes by default.
+// 500 milliseconds by default.
 func WithCooldown(d time.Duration) Option {
 	return func(p *Platform) { p.cooldown = d }
 }
@@ -98,7 +98,7 @@ func NewPlatform(c platform.Client, opts ...Option) *Platform {
 		vcpus:    4,
 		memoryMB: 8192,
 		cacheMB:  20480,
-		cooldown: 5 * time.Minute,
+		cooldown: 500 * time.Millisecond,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -334,6 +334,7 @@ func (p *Platform) create(ctx context.Context, name string, key Key) error {
 		},
 		ScaleToZero: &platform.CreateInstanceScaleToZero{
 			Policy:         new(platform.InstanceScaleToZeroPolicyOn),
+			Stateful:       new(true),
 			CooldownTimeMs: new(int32(p.cooldown.Milliseconds())),
 		},
 	})
